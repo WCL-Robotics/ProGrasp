@@ -4,7 +4,13 @@ pretrained_llms/
 checkpoints/
 
 task_data/
+__pycache__/
 
+*.pyc
+
+*.pyo
+
+.vscode/
 *.pt
 
 *.pth
