@@ -15,20 +15,41 @@ def unproject(intrinsics, poses, depths):
     B, V, H, W = depths.shape 
     # (B, V, 1)
     fx, fy, px, py = intrinsics[..., 0, 0][..., None], intrinsics[..., 1, 1][..., None], intrinsics[..., 0, 2][..., None], intrinsics[..., 1, 2][..., None]
+    sx = W / 1024.0
+    sy = H / 768.0
 
-    y = torch.arange(0, H).to(depths.device) / H
-    x = torch.arange(0, W).to(depths.device) / W
-    y, x = torch.meshgrid(y, x)
+    fx = fx * sx
+    fy = fy * sy
+    px = px * sx
+    py = py * sy
 
-    x = x[None, None].repeat(B, V, 1, 1).flatten(2).to(torch.bfloat16)  # (B, V, H*W)
-    y = y[None, None].repeat(B, V, 1, 1).flatten(2).to(torch.bfloat16)  # (B, V, H*W)
-    z = depths.flatten(2)  # (B, V, H*W)
-    x = (x - px) * z / fx
-    y = (y - py) * z / fy
+    # y = torch.arange(0, H).to(depths.device) / H
+    # x = torch.arange(0, W).to(depths.device) / W
+    # y, x = torch.meshgrid(y, x)
+
+    # x = x[None, None].repeat(B, V, 1, 1).flatten(2).to(torch.bfloat16)  # (B, V, H*W)
+    # y = y[None, None].repeat(B, V, 1, 1).flatten(2).to(torch.bfloat16)  # (B, V, H*W)
+    # z = depths.flatten(2)  # (B, V, H*W)
+    # x = (x - px) * z / fx
+    # y = (y - py) * z / fy
+
+    # 像素坐标（0..W-1 / 0..H-1）
+    u = torch.arange(W, device=depths.device)
+    v = torch.arange(H, device=depths.device)
+    vv, uu = torch.meshgrid(v, u, indexing='ij')  # (H,W)
+
+    uu = uu[None, None].repeat(B, V, 1, 1).flatten(2).float()
+    vv = vv[None, None].repeat(B, V, 1, 1).flatten(2).float()
+
+    z = depths.flatten(2).float()
+
+    x = (uu - px) * z / fx
+    y = (vv - py) * z / fy
+
     cam_coords = torch.stack([
         x, y, z, torch.ones_like(x)
     ], -1)
-
+    cam_coords = cam_coords.to(dtype=poses.dtype)
     world_coords = (poses @ cam_coords.permute(0, 1, 3, 2)).permute(0, 1, 3, 2)
     world_coords = world_coords[..., :3] / world_coords[..., 3][..., None]
     world_coords = world_coords.reshape(B, V, H, W, 3)

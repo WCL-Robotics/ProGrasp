@@ -343,10 +343,10 @@ class LLaVATrainer(Trainer):
         grasp_outs, outputs = model(**inputs)
 
         # loss_grasp = model.det_head.loss_by_feat(gs, gs_labels, grasp_outs)
-        loss_grasp = model.det_head.loss_grasp_label(gs_labels, grasp_outs)
-        # loss_grasp = dict()
-        # loss_grasp['loss_cls'] = torch.tensor(0.0, device="cuda:0")
-        # loss_grasp['loss_bbox'] = torch.tensor(0.0, device="cuda:0")
+        # loss_grasp = model.det_head.loss_grasp_label(gs_labels, grasp_outs)
+        loss_grasp = dict()
+        loss_grasp['loss_cls'] = torch.tensor(0.0, device="cuda:0")
+        loss_grasp['loss_bbox'] = torch.tensor(0.0, device="cuda:0")
         
         # Save past state if it exists
         # TODO: this needs to be fixed and made cleaner later.
@@ -1061,6 +1061,11 @@ class LLaVATrainer(Trainer):
                 keys_to_match.extend(['embed_tokens', 'embed_in'])
 
             weight_to_save = get_mm_adapter_state_maybe_zero_3(self.model.named_parameters(), keys_to_match)
+            
+            # Also save buffers (e.g. BatchNorm running_mean/var) for grasp_tower
+            buffers_to_save = get_mm_adapter_state_maybe_zero_3(self.model.named_buffers(), keys_to_match)
+            weight_to_save.update(buffers_to_save)
+
             # weight_to_save = get_mm_adapter_state_maybe_zero_3(self.model.named_parameters(), keys_to_match)
             # self.model.config.save_pretrained(output_dir)
 

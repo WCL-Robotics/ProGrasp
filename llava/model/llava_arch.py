@@ -245,6 +245,15 @@ class LlavaMetaForCausalLM(ABC):
         video_features = self.get_model().mm_projector(video_features)  # (B, 1024, D)
         return video_features, batch_offset
 
+    def encode_grasp_rgbd(self, images, depths, poses, intrinsics, lengths=None, grasps=None):
+        batch_size, num_view, _, _, _ = images.shape  # (B, V, C, H, W)
+        image_features = self.get_model().get_vision_tower()(images.flatten(0, 1))
+        num_patches_per_side = self.get_vision_tower().num_patches_per_side
+        image_features = image_features.permute(0, 2, 1).reshape(batch_size, num_view, -1, num_patches_per_side, num_patches_per_side)       
+        video_features, batch_offset = self.get_model().get_video_tower()(image_features, depths, poses, intrinsics, lengths=lengths, grasps=grasps)  # (B, 1024, C)
+        # video_features = self.get_model().mm_projector(video_features)  # (B, 1024, D)
+        # return video_features, batch_offset
+
     def encode_points(self, pcs):
         voxel_features, batch_offset = self.get_model().get_voxel_tower()(pcs)
         return voxel_features, batch_offset
@@ -262,9 +271,13 @@ class LlavaMetaForCausalLM(ABC):
         if pure_imgs is not None:
             pure_img_features = self.encode_images(images[:, 0])
         grasp_features = []
-        for g in grasp:
-            grasp_feature = grasp_tower(g)  # (num_grasps, D)
-            grasp_features.append(grasp_feature)
+        # grasp = torch.stack(grasp, dim=0)
+        # self.encode_grasp_rgbd(images, depths, poses, intrinsics, lengths=lengths, grasps=grasp)
+        # for index in range(len(grasp)):
+        #     grasp_feature = grasp_tower(pcs[index], grasp[index])  # (num_grasps, D)
+        #     grasp_feature = grasp_feature.to(dtype=self.dtype)
+        #     grasp_features.append(grasp_feature)
+
         if images.ndim == 5 and depths is not None:
             video_features, batch_offset = self.encode_rgbd_videos(images, depths, poses, intrinsics, lengths=lengths)
             if voxel_tower is not None and pcs is not None:

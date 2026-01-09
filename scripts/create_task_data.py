@@ -26,6 +26,9 @@ import open3d as o3d   # 追加
 from llava.train.visiual import merge_grasp
 from llava.train.llm import read_grasp_part
 
+from scipy.spatial.transform import Rotation as R
+
+
 
 
 # x: right, y: up, z: forward
@@ -48,12 +51,21 @@ def project_points(pc_xyz, K, ext):
     proj_points[:2, :] = proj_points[:2, :] / (proj_points[2, :]+1e-4) 
     return proj_points.t()
 
+def get_gripper_control_points():
+    return np.array([
+        [-0.10, 0, 0, 1],
+        [-0.03, 0, 0, 1],
+        [-0.03, 0.07, 0, 1],
+        [0.03, 0.07, 0, 1],
+        [-0.03, -0.07, 0, 1],
+        [0.03, -0.07, 0, 1]])
 
 def points2deprgb(points, pc_rgb, height, width):
     points[:, 0] = points[:, 0] * width
     points[:, 1] = points[:, 1] * height
     depth_map = torch.zeros((height, width), dtype=torch.float32)
-    img_rgb = torch.zeros((height, width, 3), dtype=torch.float32)
+    img_rgb = torch.ones((height, width, 3), dtype=torch.float32) #背景全为白色
+    # img_rgb = torch.zeros((height, width, 3), dtype=torch.float32) #背景全为黑色
     coor = torch.round(points[:, :2])
     depth = points[:, 2]
     kept1 = (coor[:, 0] >= 0) & (coor[:, 0] < width) & (
@@ -134,6 +146,31 @@ def rotate_extrinsic_world2cam_around_z(pivot, E_w2c, angle_rad):
     E_w2c_rot = np.linalg.inv(T_wc_rot)  # 回到 World->Cam
     return E_w2c_rot
 
+def transform_matrix_to_6d(Rts):
+    """
+    Convert [N, 4, 4] transformation matrices to [N, 6] pose vectors.
+    Format: [rx, ry, rz, tx, ty, tz] where (rx, ry, rz) is the rotation vector.
+    
+    Args:
+        Rts (np.ndarray): Shape [N, 4, 4]
+        
+    Returns:
+        np.ndarray: Shape [N, 6]
+    """
+    # 提取旋转矩阵 [N, 3, 3]
+    rot_matrices = Rts[:, :3, :3]
+    # 提取平移向量 [N, 3]
+    translations = Rts[:, :3, 3]
+    
+    # 将旋转矩阵转换为旋转向量 (Rotation Vector / Axis-Angle * angle)
+    # scipy 的 as_rotvec() 返回的就是旋转向量
+    rot_vectors = R.from_matrix(rot_matrices).as_rotvec()
+    
+    # 拼接 [N, 3] + [N, 3] -> [N, 6]
+    poses_6d = np.concatenate([translations, rot_vectors], axis=1)
+    
+    return poses_6d
+
 def _fill_grasp_trainval_infos(version="train", pruning=False):
     """Generate the train/val infos from the raw data.
 
@@ -163,7 +200,7 @@ def _fill_grasp_trainval_infos(version="train", pruning=False):
         part_filenames = filenames[id*seperate_num:min((id+1)*seperate_num, int(len(filenames)*4/5))]   # 80% scenes for training
     else:
         part_filenames = filenames[int(len(filenames)*4/5)+id*seperate_num:min(int(len(filenames)*4/5)+(id+1)*seperate_num, len(filenames))]   # 20% scenes for val
-
+    # part_filenames = part_filenames[17:18]
     for jj, filename in enumerate(tqdm(part_filenames)):
         scene = filename
         # try: 
@@ -178,13 +215,34 @@ def _fill_grasp_trainval_infos(version="train", pruning=False):
         gs_label_list = []
 
         pos_prompt_list = []
-        
+
+
+        pc = np.load(f"/media/robot/data/WCL/taskgrasp/taskgrasp_image/scans/{scene}/fused_pc_clean.npy")
+        pc_mean = pc[:, :3].mean(axis=0)
+        pc[:, :3] -= pc_mean
+        z_min = pc[:, 2].min()
+        eps = 1e-6  # 或者 1e-3 看你后续鲁棒性
+        pc[:, 2] += (-z_min + eps)
+
         # with open(f"data/grasp_anything/grasp/{scene}_{i}", "rb") as f:
             # Rts, ws = pickle.load(f)
         Rts = merge_grasp(f"/media/robot/data/WCL/taskgrasp/taskgrasp_image/scans/{scene}")
-        ws = torch.zeros((len(Rts),), dtype=torch.float64).numpy()
-        
-        gs = torch.from_numpy(np.concatenate((se3_log_map(torch.from_numpy(Rts)).numpy(), 2*ws[:, None]/MAX_WIDTH-1.0), axis=-1)).to(torch.float32)
+        # gs = Rts.reshape(Rts.shape[0], -1)
+        # gs = torch.from_numpy(gs).to(torch.float32)
+
+        dz = -pc[:, 2].min() + eps  # 你对点云加的这个值
+        T_shift = np.eye(4, dtype=np.float32)
+        T_shift[2, 3] = dz
+        Rts = T_shift[None, :, :] @ Rts
+
+        grasp_pc = get_gripper_control_points()
+        gs = np.matmul(Rts, grasp_pc.T).transpose(0, 2, 1)
+        gs = gs[:, :, :3]
+        gs = torch.from_numpy(gs).to(torch.float32)
+
+        # gs = transform_matrix_to_6d(Rts)
+        # ws = torch.zeros((len(Rts),), dtype=torch.float64).numpy()
+        # gs = torch.from_numpy(np.concatenate((se3_log_map(torch.from_numpy(Rts)).numpy(), 2*ws[:, None]/MAX_WIDTH-1.0), axis=-1)).to(torch.float32)
         gs_labels = torch.ones_like(gs[..., :1], dtype=torch.int64)
 
         if pruning:
@@ -193,7 +251,7 @@ def _fill_grasp_trainval_infos(version="train", pruning=False):
                 gs_list.append(gs)
                 gs_label_list.append(gs_labels)
                 # continue
-            assert gs.dim() == 2
+            # assert gs.dim() == 2
             # pruned_grasps = pruning_grasps(gs, max_num=max_num)
             # gs_list.append(pruned_grasps)
             # gs_label_list.append(gs_labels[:len(pruned_grasps)])
@@ -206,9 +264,8 @@ def _fill_grasp_trainval_infos(version="train", pruning=False):
         if len(gs_list)==0:
             continue
 
-        pc = np.load(f"/media/robot/data/WCL/taskgrasp/taskgrasp_image/scans/{scene}/fused_pc_clean.npy")
-        pc_mean = pc[:, :3].mean(axis=0)
-        pc[:, :3] -= pc_mean
+
+
         point_cloud = o3d.geometry.PointCloud()
         point_cloud.points = o3d.utility.Vector3dVector(pc[:, :3])
         pivot = np.asarray(point_cloud.get_axis_aligned_bounding_box().get_center())
@@ -250,7 +307,18 @@ def _fill_grasp_trainval_infos(version="train", pruning=False):
             depth_map, img_rgb = points2deprgb(proj_points, pc_rgb, width, height)
             # print(f"Depth min: {depth_map.min()}, max: {depth_map.max()}")
 
-            # print("img_rgb",img_rgb.shape)
+            # depth = depth_map.detach().cpu().numpy().astype(np.float32)
+            # valid = np.isfinite(depth) & (depth > 0)   # 常见：0 表示无效
+            # vmin, vmax = np.percentile(depth[valid], [2, 98])  # 比 min/max 更稳
+            # depth_clip = np.clip(depth, vmin, vmax)
+            # depth_norm = ((depth_clip - vmin) / (vmax - vmin + 1e-6) * 255).astype(np.uint8)
+            # depth_norm[~valid] = 0
+            # heatmap = cv2.applyColorMap(depth_norm, cv2.COLORMAP_JET)
+            # cv2.imwrite(
+            #     f"/media/robot/data/WCL/taskgrasp/taskgrasp_image/scans/{scene}/rgb/{scene}_{str(k)}_depth_heatmap.png",
+            #     heatmap
+            # )
+
             img_rgb = img_rgb.detach().cpu().numpy()
 
             save_rgb_dir = f"/media/robot/data/WCL/taskgrasp/taskgrasp_image/scans/{scene}/rgb/"

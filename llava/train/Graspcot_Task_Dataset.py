@@ -695,8 +695,8 @@ class GraspcotDataset_Train(Dataset):
         # print(gs_labels.shape, len(grasps))
         # gs_labels = info['gs_labels']
 
-        pc = np.load(f"{self.dataset_path}/scans/{scene}/fused_pc_clean.npy")
-        pc = torch.from_numpy(pc).to(torch.bfloat16)
+        pc = np.load(f"{self.dataset_path}/scans/{scene}/down_pc_4096.npy")
+        pc = torch.from_numpy(pc).to(torch.float32)
 
         rgb = []
         for i in range(4):
@@ -967,8 +967,8 @@ class GraspcotDataset_Test(Dataset):
 
         gs_labels = torch.tensor(new_gs_labels, dtype=torch.int64).unsqueeze(1)
 
-        pc = np.load(f"{self.dataset_path}/scans/{scene}/fused_pc_clean.npy")
-        pc = torch.from_numpy(pc).to(torch.bfloat16)
+        pc = np.load(f"{self.dataset_path}/scans/{scene}/down_pc_4096.npy")
+        pc = torch.from_numpy(pc).to(torch.float32)
 
         rgb = []
         for i in range(4):

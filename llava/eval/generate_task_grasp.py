@@ -81,15 +81,20 @@ def precess_data(tokenizer, instance):
         labels=labels,
         attention_mask=input_ids.ne(tokenizer.pad_token_id),
     )
-    
+    batch["input_token_len"] = input_ids.shape[1]
     # ==========Too many videos or images may lead to OOM, so we encode them one by one======================
     if 'image' in instance:
         images = instance["image"].unsqueeze(0).to(torch.bfloat16).cuda()
         batch['images'] = images  # (B, V, H, W)
 
+
     if 'grasps' in instance:
-        grasps = instance["grasps"].unsqueeze(0).to(torch.bfloat16).cuda()
+        grasps = instance["grasps"].unsqueeze(0).to(torch.float32).cuda()
         batch['gs'] = grasps  # (B, N, 7)
+        
+    if 'pc' in instance:
+        pcs = instance["pc"].unsqueeze(0).to(torch.float32).cuda()
+        batch['pcs'] = pcs  # (B, N, 7)
 
     if 'depth' in instance:
         depths = instance["depth"].unsqueeze(0).to(torch.bfloat16).cuda()
@@ -167,6 +172,28 @@ def eval_model(args):
 
     model.eval()
 
+
+    if hasattr(model, 'model') and hasattr(model.model, 'grasp_tower'):
+        print("Forcing grasp_tower to TRAIN mode due to missing BatchNorm stats...")
+        model.model.grasp_tower.train()
+    elif hasattr(model, 'grasp_tower'):
+        print("Forcing grasp_tower to TRAIN mode due to missing BatchNorm stats...")
+        model.grasp_tower.train()
+
+    # DEBUG: Check if BN stats are loaded correctly
+    # print("DEBUG: Inspecting Grasp Tower BN Stats...")
+    # bn_found = False
+    # for name, module in model.named_modules():
+    #     if 'grasp_tower' in name and isinstance(module, torch.nn.BatchNorm2d):
+    #         print(f"Layer: {name}")
+    #         print(f"  running_mean[:5]: {module.running_mean[:5].cpu().tolist()}")
+    #         print(f"  running_var[:5]:  {module.running_var[:5].cpu().tolist()}")
+    #         print(f"  num_batches_tracked: {module.num_batches_tracked}")
+    #         bn_found = True
+    #         break
+    # if not bn_found:
+    #     print("DEBUG: No BatchNorm1d layer found in grasp_tower.")
+
     if "llama-2" in model_name.lower():
         conv_mode = "llava_llama_2"
     elif "mistral" in model_name.lower():
@@ -207,9 +234,6 @@ def eval_model(args):
     for i in tqdm(selected_data):
 
         instance = test_dataset.__getitem__(i)
-        gt_grasps = instance["grasps"]
-        pc_path = instance["pc_path"]
-        scene = instance["scene"]
         gs_labels = instance["gs_labels"]
         correct_answers = instance.pop("correct_answer")
         questions = instance.pop("questions")
@@ -221,12 +245,15 @@ def eval_model(args):
             grasp_outs, outputs = model(**inputs)
             preds = grasp_outs['all_cls_scores'][0]
             preds = preds.squeeze(0).squeeze(-1)
-            preds_list.append(preds.cpu())
             gs_labels = gs_labels.to(preds.device).float()
+            loss_fct = torch.nn.BCELoss()
+            loss = loss_fct(preds, gs_labels)
+            print("Grasp Prediction Loss:", loss.item())
             num_fail += check_grasp(gs_labels, preds)
 
+
         avg_time += time.time() - start_time
-    preds_list = np.array(preds_list)
+
     # np.save("preds_list.npy", preds_list)
 
     print(1-num_fail/950.0)

@@ -41,8 +41,8 @@ from llava.mm_utils import tokenizer_image_token, map_obj, PlainBoxFormatter, to
 from PIL import Image
 
 # from llava.train.GraspcotDataset import GraspcotDataset_Train
-# from llava.train.Graspcot_Task_Dataset import GraspcotDataset_Train
-from llava.train.Graspcot_Grasp_Dataset import GraspcotDataset_Train
+from llava.train.Graspcot_Task_Dataset import GraspcotDataset_Train
+# from llava.train.Graspcot_Grasp_Dataset import GraspcotDataset_Train
 
 from datetime import datetime
 import shutil
@@ -226,6 +226,8 @@ def safe_save_model_for_hf_trainer(trainer: transformers.Trainer,
             keys_to_match.extend(['embed_tokens', 'embed_in'])
 
         weight_to_save = get_mm_adapter_state_maybe_zero_3(trainer.model.named_parameters(), keys_to_match)
+        buffers_to_save = get_mm_adapter_state_maybe_zero_3(trainer.model.named_buffers(), keys_to_match)
+        weight_to_save.update(buffers_to_save)
         trainer.model.config.save_pretrained(output_dir)
 
         current_folder = output_dir.split('/')[-1]
@@ -963,9 +965,9 @@ class DataCollatorForSupervisedDataset(object):
             batch['pure_imgs'] = torch.stack(pure_imgs) # (B, 3, 168, 168)
 
         # Process point cloud data
-        # if 'grasps' in instances[0]:
-        #     grasps = [instance['grasps'] for instance in instances]
-        #     batch['grasps'] = torch.stack(grasps)  # (B, N, 6)
+        if 'pc' in instances[0]:
+            pcs = [instance['pc'] for instance in instances]
+            batch['pcs'] = torch.stack(pcs)  # (B, N, 3)
 
         return batch
 
@@ -1030,11 +1032,13 @@ def train(attn_implementation=None):
     # ==========================================================================
     if model_args.vision_tower is not None or model_args.video_tower is not None:
     # ==========================================================================
+        if training_args.bf16 == False:
+            attn_implementation = "eager"
         model = LlavaLlamaForCausalLM_v2.from_pretrained(
             model_args.model_name_or_path,
             cache_dir=training_args.cache_dir,
             attn_implementation=attn_implementation,
-            torch_dtype=(torch.bfloat16 if training_args.bf16 else None),
+            torch_dtype=(torch.bfloat16 if training_args.bf16 else torch.float32),
             **bnb_model_from_pretrained_args
         )
 
@@ -1043,18 +1047,18 @@ def train(attn_implementation=None):
             model_args.model_name_or_path,
             cache_dir=training_args.cache_dir,
             attn_implementation=attn_implementation,
-            torch_dtype=(torch.bfloat16 if training_args.bf16 else None),
+            torch_dtype=(torch.bfloat16 if training_args.bf16 else torch.float32),
             **bnb_model_from_pretrained_args
         )
     model.config.use_cache = False
 
-    if model_args.lora_model_path is not None:
-        from peft import PeftModel
-        print(f"Loading LoRA from {model_args.lora_model_path}")
-        model = PeftModel.from_pretrained(model, model_args.lora_model_path)
-        print("Merging LoRA weights...")
-        model = model.merge_and_unload()
-        print("LoRA merged and unloaded")
+    # if model_args.lora_model_path is not None:
+    #     from peft import PeftModel
+    #     print(f"Loading LoRA from {model_args.lora_model_path}")
+    #     model = PeftModel.from_pretrained(model, model_args.lora_model_path)
+    #     print("Merging LoRA weights...")
+    #     model = model.merge_and_unload()
+    #     print("LoRA merged and unloaded")
 
     if model_args.freeze_backbone:
         model.model.requires_grad_(False)
@@ -1137,16 +1141,16 @@ def train(attn_implementation=None):
         if model_args.vision_tower is not None:
             vision_tower = model.get_vision_tower()
             # to gpu device
-            vision_tower.to(dtype=torch.bfloat16 if training_args.bf16 else torch.float16, device=training_args.device)
+            vision_tower.to(dtype=torch.bfloat16 if training_args.bf16 else torch.float32, device=training_args.device)
 
             data_args.image_processor = vision_tower.image_processor
             data_args.is_multimodal = True
     
         if model_args.video_tower is not None:
             video_tower = model.get_video_tower()  # class not str
-            video_tower.to(dtype=torch.bfloat16 if training_args.bf16 else torch.float16, device=training_args.device)
+            video_tower.to(dtype=torch.bfloat16 if training_args.bf16 else torch.float32, device=training_args.device)
             promp_encoder = model.get_prompt_encoder()
-            promp_encoder.to(dtype=torch.bfloat16 if training_args.bf16 else torch.float16, device=training_args.device)
+            promp_encoder.to(dtype=torch.bfloat16 if training_args.bf16 else torch.float32, device=training_args.device)
 
             # data_args.video_processor = video_tower.video_processor
             data_args.is_multimodal = True
@@ -1154,12 +1158,16 @@ def train(attn_implementation=None):
 
         if model_args.voxel_tower is not None:
             voxel_tower = model.get_voxel_tower()  # class not str
-            voxel_tower.to(dtype=torch.bfloat16 if training_args.bf16 else torch.float16, device=training_args.device)
+            voxel_tower.to(dtype=torch.bfloat16 if training_args.bf16 else torch.float32, device=training_args.device)
 
         if model_args.grasp_tower is not None:
             grasp_tower = model.get_grasp_tower()  # class not str
-            grasp_tower.to(dtype=torch.bfloat16 if training_args.bf16 else torch.float16, device=training_args.device)
-    
+            grasp_tower.initialize()
+            grasp_tower.to(dtype=torch.float32, device=training_args.device)
+            # grasp_tower.to(dtype=torch.bfloat16 if training_args.bf16 else torch.float32, device=training_args.device)
+        for p in model.get_model().grasp_tower.parameters():
+            p.requires_grad = False
+
     # ======================================================================================
 
         model.config.image_aspect_ratio = data_args.image_aspect_ratio
@@ -1174,6 +1182,7 @@ def train(attn_implementation=None):
             model.requires_grad_(False)
             for p in model.get_model().mm_projector.parameters():
                 p.requires_grad = True
+
             for p in model.get_model().grasp_tower.parameters():
                 p.requires_grad = True
             
@@ -1215,11 +1224,11 @@ def train(attn_implementation=None):
         model.initialize_vision_tokenizer(model_args, tokenizer=tokenizer)
 
     det_head = model.det_head
-    det_head.to(dtype=torch.bfloat16 if training_args.bf16 else torch.float16, device=training_args.device)
+    det_head.to(dtype=torch.bfloat16 if training_args.bf16 else torch.float32, device=training_args.device)
 
     for p in model.det_head.parameters():
-        p.requires_grad = True
-        # p.requires_grad = False
+        # p.requires_grad = True
+        p.requires_grad = False
 
     model.config.use_dialogue = False 
     if data_args.dialogue:
@@ -1248,6 +1257,10 @@ def train(attn_implementation=None):
     # this is a dict
     data_module = make_supervised_data_module(tokenizer=tokenizer,
                                               data_args=data_args)
+
+    # for name, param in model.named_parameters():
+    #     print(f"{name}: {param.shape} | {param.dtype}")
+    # print("---------------------------------")
 
     trainer = LLaVATrainer(model=model,
                     tokenizer=tokenizer,

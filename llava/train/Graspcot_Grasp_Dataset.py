@@ -725,14 +725,17 @@ class GraspcotDataset_Train(Dataset):
 
 
     def get_data_info(self, index):
-        info = self.aligned_infos['infos'][index]
+        scene_idx = index // 4
+        prompt_idx = index % 4
+        info = self.aligned_infos['infos'][scene_idx]
         
         scene = info['scene_token']
         obj = scene.split('_', 1)[1]
         try:
             with open(f"/media/robot/data/WCL/taskgrasp/taskgrasp_image/scans/{scene}/prompt.pkl", "rb") as f:
                 prompts = pickle.load(f)
-                prompt = random.choice(prompts)
+                # prompt = random.choice(prompts)
+                prompt = prompts[prompt_idx]
 
         except Exception as e:
             print(f"Error loading prompt for scene {scene}: {e}")
@@ -763,8 +766,8 @@ class GraspcotDataset_Train(Dataset):
         # print(gs_labels.shape, len(grasps))
         # gs_labels = info['gs_labels']
 
-        pc = np.load(f"{self.dataset_path}/scans/{scene}/fused_pc_clean.npy")
-        pc = torch.from_numpy(pc).to(torch.bfloat16)
+        pc = np.load(f"{self.dataset_path}/scans/{scene}/down_pc_4096.npy")
+        pc = torch.from_numpy(pc).to(torch.float32)
 
         rgb = []
         for i in range(4):
@@ -787,7 +790,9 @@ class GraspcotDataset_Train(Dataset):
             part_pro += part_attr[index]
         
         motion_definition = get_motion_definition(motion_attributes, prompt[1])
-        request_str = f"The task is: {prompt[0]} This task belongs to the motion primitive {prompt[1]} The definition of this motion primitive is: {motion_definition} According to <image>, the object in the image is {obj}, which consists of the following parts: {parts} The attributes of each part are: {part_pro} The part {prompt[3][:-1]} satisfies the task semantics and can execute the motion primitives to which the task belongs. There are several grasps on the object the {obj}. <grasp_feature>. Which grasps are on the part {prompt[3][:-1]}?"
+        # request_str = f"The task is: {prompt[0]} This task belongs to the motion primitive {prompt[1]} The definition of this motion primitive is: {motion_definition} According to <image>, the object in the image is {obj}, which consists of the following parts: {parts} The attributes of each part are: {part_pro} The part {prompt[3][:-1]} satisfies the task semantics and can execute the motion primitives to which the task belongs. There are several grasps on the object the {obj}. <grasp_feature>. Which grasps are on the part {prompt[3][:-1]}?"
+        request_str = f"The task is: {prompt[0]} This task belongs to the motion primitive {prompt[1]} The definition of this motion primitive is: {motion_definition} The object is {obj}, which consists of the following parts: {parts} The attributes of each part are: {part_pro} The part {prompt[3][:-1]} satisfies the task semantics and can execute the motion primitives to which the task belongs. There are several grasps on the object the {obj}. <grasp_feature>. Which grasps are on the part {prompt[3][:-1]}?"
+
         indices = torch.nonzero(gs_labels.squeeze(1)).squeeze(1).tolist()
         number_words = [number_model[idx] for idx in indices]
         # Use "," instead of ", " to avoid tokenization mismatch (24 tokens diff for 25 items)
@@ -866,7 +871,7 @@ class GraspcotDataset_Train(Dataset):
         return data_dict
 
     def __len__(self):
-        return len(self.aligned_infos['infos'])
+        return len(self.aligned_infos['infos']) * 4
     
 
 class GraspcotDataset_Test(Dataset):
@@ -882,7 +887,7 @@ class GraspcotDataset_Test(Dataset):
         
         self.tokenizer = tokenizer
         
-        self.ann_file = [f"/media/robot/data/WCL/taskgrasp/taskgrasp_image/grasp_task_infos_train_0.pkl"]
+        self.ann_file = [f"/media/robot/data/WCL/taskgrasp/taskgrasp_image/grasp_task_infos_test_0.pkl"]
         # self.dialogue_file = ["data/grasp_anything/dialogues/dialogue_infos_val_all.pkl"]
         
         self.aligned_infos = self.load_annotations(self.ann_file)
@@ -992,8 +997,8 @@ class GraspcotDataset_Test(Dataset):
 
         gs_labels = torch.tensor(new_gs_labels, dtype=torch.int64).unsqueeze(1)
 
-        pc = np.load(f"{self.dataset_path}/scans/{scene}/fused_pc_clean.npy")
-        pc = torch.from_numpy(pc).to(torch.bfloat16)
+        pc = np.load(f"{self.dataset_path}/scans/{scene}/down_pc_4096.npy")
+        pc = torch.from_numpy(pc).to(torch.float32)
 
         rgb = []
         for i in range(4):
@@ -1015,7 +1020,9 @@ class GraspcotDataset_Test(Dataset):
             part_pro += part_attr[index]
         
         motion_definition = get_motion_definition(motion_attributes, prompt[1])
-        request_str = f"The task is: {prompt[0]} This task belongs to the motion primitive {prompt[1]} The definition of this motion primitive is: {motion_definition} According to <image>, the object in the image is {obj}, which consists of the following parts: {parts} The attributes of each part are: {part_pro} The part {prompt[3][:-1]} satisfies the task semantics and can execute the motion primitives to which the task belongs. There are several grasps on the object the {obj}. <grasp_feature>. Which grasps are on the part {prompt[3][:-1]}?"
+        # request_str = f"The task is: {prompt[0]} This task belongs to the motion primitive {prompt[1]} The definition of this motion primitive is: {motion_definition} According to <image>, the object in the image is {obj}, which consists of the following parts: {parts} The attributes of each part are: {part_pro} The part {prompt[3][:-1]} satisfies the task semantics and can execute the motion primitives to which the task belongs. There are several grasps on the object the {obj}. <grasp_feature>. Which grasps are on the part {prompt[3][:-1]}?"
+        request_str = f"The task is: {prompt[0]} This task belongs to the motion primitive {prompt[1]} The definition of this motion primitive is: {motion_definition} The object is {obj}, which consists of the following parts: {parts} The attributes of each part are: {part_pro} The part {prompt[3][:-1]} satisfies the task semantics and can execute the motion primitives to which the task belongs. There are several grasps on the object the {obj}. <grasp_feature>. Which grasps are on the part {prompt[3][:-1]}?"
+
         indices = torch.nonzero(gs_labels.squeeze(1)).squeeze(1).tolist()
         number_words = [number_model[idx] for idx in indices]
         # Use "," instead of ", " to avoid tokenization mismatch (24 tokens diff for 25 items)

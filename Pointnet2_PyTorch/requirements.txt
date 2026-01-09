@@ -1,0 +1,8 @@
+numpy
+msgpack-numpy
+lmdb
+h5py
+
+pytorch-lightning==0.7.1
+
+./pointnet2_ops_lib/.

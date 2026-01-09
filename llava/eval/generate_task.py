@@ -45,10 +45,14 @@ def precess_data(tokenizer, instance):
     if 'image' in instance:
         images = instance["image"].unsqueeze(0).to(torch.bfloat16).cuda()
         batch['images'] = images  # (B, V, H, W)
-    if 'grasps' in instance:
-        grasps = instance["grasps"].unsqueeze(0).to(torch.bfloat16).cuda()
-        batch['gs'] = grasps  # (B, N, 7)
 
+    if 'grasps' in instance:
+        grasps = instance["grasps"].unsqueeze(0).to(torch.float32).cuda()
+        batch['gs'] = grasps  # (B, N, 7)
+        
+    if 'pc' in instance:
+        pcs = instance["pc"].unsqueeze(0).to(torch.float32).cuda()
+        batch['pcs'] = pcs  # (B, N, 7)
     if 'depth' in instance:
         depths = instance["depth"].unsqueeze(0).to(torch.bfloat16).cuda()
         poses = instance["pose"].unsqueeze(0).to(torch.bfloat16).cuda()
@@ -63,6 +67,7 @@ def precess_data(tokenizer, instance):
     if 'pure_img' in instance:
         pure_imgs = instance["pure_img"].unsqueeze(0).to(torch.bfloat16).cuda()
         batch['pure_imgs'] = pure_imgs # (B, 3, 168, 168)
+
     return batch
 
 
@@ -192,7 +197,7 @@ def eval_model(args):
                     grasp_out=grasp_out
                 )
                 # Copy multimodal inputs
-                for k in ['images', 'depths', 'poses', 'intrinsics', 'pure_imgs', 'gs']:
+                for k in ['images', 'depths', 'poses', 'intrinsics', 'pure_imgs', 'gs', 'pcs']:
                     if k in inputs:
                         curr_batch[k] = inputs[k]
                 

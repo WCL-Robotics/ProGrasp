@@ -220,6 +220,7 @@ class PETRHead_v2(AnchorFreeHead):
         reg_branch = []
         for _ in range(self.num_reg_fcs):
             reg_branch.append(Linear(self.embed_dims, self.embed_dims))
+            reg_branch.append(nn.LayerNorm(self.embed_dims))
             reg_branch.append(nn.ReLU())
         reg_branch.append(Linear(self.embed_dims, self.code_size))
         reg_branch = nn.Sequential(*reg_branch)
@@ -265,7 +266,8 @@ class PETRHead_v2(AnchorFreeHead):
             outputs_classes.append(outputs_class)
 
             tmp = self.reg_branches[lvl](x[lvl])
-            tmp = tmp.sigmoid()
+            # tmp = tmp.sigmoid()
+            tmp = (tmp.tanh() + 1) / 2.0
             outputs_coord = tmp
             outputs_coords.append(outputs_coord)
 

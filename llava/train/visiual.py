@@ -10,6 +10,7 @@ import open3d as o3d
 import trimesh.transformations as tra
 from sklearn.decomposition import PCA
 import os
+import torch
 
 
 def get_gripper_control_points():
@@ -18,7 +19,6 @@ def get_gripper_control_points():
         [-0.03, 0, 0, 1],
         [-0.03, 0.07, 0, 1],
         [0.03, 0.07, 0, 1],
-        [-0.03, 0.07, 0, 1],
         [-0.03, -0.07, 0, 1],
         [0.03, -0.07, 0, 1]])
 
@@ -80,6 +80,16 @@ def depth_to_pointcloud(
     if return_mask:
         return points, mask
     return points
+
+def get_gripper_control_points():
+    return np.array([
+        [-0.10, 0, 0, 1],
+        [-0.03, 0, 0, 1],
+        [-0.03, 0.07, 0, 1],
+        [0.03, 0.07, 0, 1],
+        [-0.03, 0.07, 0, 1],
+        [-0.03, -0.07, 0, 1],
+        [0.03, -0.07, 0, 1]])
 
 def get_gripper_control_points_o3d(
     grasp,
@@ -982,7 +992,7 @@ def visualize_pc_data():
     task_obj = '/media/robot/data/WCL/taskgrasp/taskgrasp_image/scans'
     folders = [f for f in os.listdir(task_obj) if os.path.isdir(os.path.join(task_obj, f))]
     folders_sorted = sorted(folders, key=lambda s: int(s[:3]))
-    folders_sorted_selected = folders_sorted[175:176]
+    folders_sorted_selected = folders_sorted[:2]
 
     for file in folders_sorted:
         grasp_path = f"/media/robot/data/WCL/taskgrasp/taskgrasp_image/scans/{file}"
@@ -990,12 +1000,30 @@ def visualize_pc_data():
 
         pcd = np.load(f"/media/robot/data/WCL/taskgrasp/taskgrasp_image/scans/{file}/fused_pc_clean.npy")
         # Downsample to 8192 points
-        # if pcd.shape[0] > 8192:
-        #     _, indices = farthest_points(pcd[:, :3], 8192, distance_by_translation_point, return_center_indexes=True)
+        # if pcd.shape[0] > 1024:
+        #     _, indices = farthest_points(pcd[:, :3], 1024, distance_by_translation_point, return_center_indexes=True)
         #     pcd = pcd[indices]
+
+        # pc_mean = pcd[:, :3].mean(axis=0)
+        # pcd[:, :3] -= pc_mean
+        # pcd = pcd[:, :3]
+        # pcd is numpy array, use numpy functions or convert to tensor
+        # m = np.max(np.sqrt(np.sum(pcd ** 2, axis=1)))
+        # pcd = pcd / m
+
+        # np.save(f"/media/robot/data/WCL/taskgrasp/taskgrasp_image/scans/{file}/down_pc_1024.npy", pcd)
+        # print("save downsampled point cloud for", file, "with shape:", pcd.shape)
 
         pc_mean = pcd[:, :3].mean(axis=0)
         pcd[:, :3] -= pc_mean
+        z_min = pcd[:, 2].min()
+        eps = 1e-6  # 或者 1e-3 看你后续鲁棒性
+        pcd[:, 2] += (-z_min + eps)
+
+        dz = -pcd[:, 2].min() + eps  # 你对点云加的这个值
+        T_shift = np.eye(4, dtype=np.float32)
+        T_shift[2, 3] = dz
+        grasps = T_shift[None, :, :] @ grasps
 
         pc_input = pcd.copy()
 
@@ -1021,17 +1049,30 @@ def visualize_pc_data():
 
         vertical_grasp_expanded = np.tile(vertical_grasp[np.newaxis, :, :], (len(grasps), 1, 1))
 
-        # for i in range(0, len(grasps)):
-        #     grasp_mesh = get_gripper_control_points_o3d(vertical_grasp)
-        #     all_grasp_meshes.extend(grasp_mesh)
-        #     break
+        grasp_pc = get_gripper_control_points()
+        grasp_pc = np.matmul(grasps, grasp_pc.T).transpose(0, 2, 1)
+        grasp_pc = grasp_pc[:, :, :3]
+
+        for i in range(0, len(grasps)):
+            grasp_mesh = get_gripper_control_points_o3d(grasps[i])
+            all_grasp_meshes.extend(grasp_mesh)
+            break
+            # 绘制 grasp_pc 的 7 个点为红色小球
+            # points = grasp_pc[i]  # shape: [7, 3]
+            # for p in points:
+            #     sphere = o3d.geometry.TriangleMesh.create_sphere(radius=0.01) # 可以根据需要调整半径
+            #     sphere.translate(p)
+            #     sphere.paint_uniform_color([1, 0, 0]) # 红色
+            #     all_grasp_meshes.append(sphere)
+            
+            
         Grasp_confidence_level = np.load("/home/robot/WCL/GraspCoT/preds_list.npy", allow_pickle=True)
         Grasp_confidence_level = Grasp_confidence_level[10]
         conf = Grasp_confidence_level.detach().cpu().numpy()
         top3_idx = np.argsort(conf)[-3:][::-1]
-        for i in range(0, 3):
-            grasp_mesh = get_gripper_control_points_o3d(grasps[top3_idx[i]])
-            all_grasp_meshes.extend(grasp_mesh)
+        # for i in range(0, 3):
+        #     grasp_mesh = get_gripper_control_points_o3d(grasps[top3_idx[i]])
+        #     all_grasp_meshes.extend(grasp_mesh)
 
         point_cloud = o3d.geometry.PointCloud()
         point_cloud.points = o3d.utility.Vector3dVector(pcd[:, :3])
@@ -1046,14 +1087,14 @@ def visualize_pc_data():
             origin=[0, 0, 0]  # 原点位置
         )
 
-        # o3d.visualization.draw_geometries([point_cloud] + all_grasp_meshes, 
-        #                                 window_name="Point Cloud with RGB Colors and Origin",
-        #                                 width=1024, 
-        #                                 height=768,
-        #                                 point_show_normal=False)
-
+        o3d.visualization.draw_geometries([point_cloud, coordinate_frame] + all_grasp_meshes, 
+                                        window_name="Point Cloud with RGB Colors and Origin",
+                                        width=1024, 
+                                        height=768,
+                                        point_show_normal=False)
+        
         # show_point_sequential(pc_list, coordinate_frame, vertical_grasp_expanded, save_dir=f"/media/robot/data/WCL/taskgrasp/taskgrasp_image/scans/{file}/visual_grasps")
-        show_grasps_sequential(point_cloud, coordinate_frame, grasps, save_dir=f"/media/robot/data/WCL/taskgrasp/taskgrasp_image/scans/{file}/visual_grasps")
+        # show_grasps_sequential(point_cloud, coordinate_frame, grasps, save_dir=f"/media/robot/data/WCL/taskgrasp/taskgrasp_image/scans/{file}/visual_grasps")
         # np.save(f"/media/robot/data/WCL/taskgrasp/taskgrasp_image/scans/{file}/visual_grasps/grasps.npy", grasps)
         
 
