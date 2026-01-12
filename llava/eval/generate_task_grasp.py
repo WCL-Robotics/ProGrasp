@@ -173,24 +173,24 @@ def eval_model(args):
     model.eval()
 
 
-    if hasattr(model, 'model') and hasattr(model.model, 'grasp_tower'):
-        print("Forcing grasp_tower to TRAIN mode due to missing BatchNorm stats...")
-        model.model.grasp_tower.train()
-    elif hasattr(model, 'grasp_tower'):
-        print("Forcing grasp_tower to TRAIN mode due to missing BatchNorm stats...")
-        model.grasp_tower.train()
+    # if hasattr(model, 'model') and hasattr(model.model, 'voxel_tower'):
+    #     print("Forcing voxel_tower to TRAIN mode due to missing BatchNorm stats...")
+    #     model.model.voxel_tower.train()
+    # elif hasattr(model, 'voxel_tower'):
+    #     print("Forcing voxel_tower to TRAIN mode due to missing BatchNorm stats...")
+    #     model.voxel_tower.train()
 
     # DEBUG: Check if BN stats are loaded correctly
     # print("DEBUG: Inspecting Grasp Tower BN Stats...")
     # bn_found = False
     # for name, module in model.named_modules():
-    #     if 'grasp_tower' in name and isinstance(module, torch.nn.BatchNorm2d):
+    #     if isinstance(module, torch.nn.BatchNorm1d) or isinstance(module, torch.nn.BatchNorm2d):
     #         print(f"Layer: {name}")
     #         print(f"  running_mean[:5]: {module.running_mean[:5].cpu().tolist()}")
     #         print(f"  running_var[:5]:  {module.running_var[:5].cpu().tolist()}")
     #         print(f"  num_batches_tracked: {module.num_batches_tracked}")
     #         bn_found = True
-    #         break
+            
     # if not bn_found:
     #     print("DEBUG: No BatchNorm1d layer found in grasp_tower.")
 
@@ -221,7 +221,7 @@ def eval_model(args):
 
     model.config.use_dialogue = True
 
-    num_val = 20
+    num_val = 38
     len_data = len(test_dataset)
     data_list = list(range(len_data))
     selected_data = random.sample(data_list, num_val)

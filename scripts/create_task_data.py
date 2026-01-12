@@ -171,6 +171,15 @@ def transform_matrix_to_6d(Rts):
     
     return poses_6d
 
+def read_data(pth):
+    file_name = []
+    with open(pth, 'r', encoding='utf-8') as f:
+        for line in f:
+            line = line.strip()
+            if line:  # 跳过空行
+                file_name.append(line)
+    return file_name
+
 def _fill_grasp_trainval_infos(version="train", pruning=False):
     """Generate the train/val infos from the raw data.
 
@@ -197,9 +206,18 @@ def _fill_grasp_trainval_infos(version="train", pruning=False):
 
     id = 0 # glyou debug
     if version == "train":
-        part_filenames = filenames[id*seperate_num:min((id+1)*seperate_num, int(len(filenames)*4/5))]   # 80% scenes for training
+        train_data = read_data("/media/robot/data/WCL/taskgrasp/taskgrasp_image/splits_final/i/0/train_i.txt")
+        val_data  = read_data("/media/robot/data/WCL/taskgrasp/taskgrasp_image/splits_final/i/0/val_i.txt")
+        train_data = list(dict.fromkeys(train_data + val_data))
+        part_filenames = train_data
+        # part_filenames = filenames[id*seperate_num:min((id+1)*seperate_num, int(len(filenames)*4/5))]   # 80% scenes for training
     else:
-        part_filenames = filenames[int(len(filenames)*4/5)+id*seperate_num:min(int(len(filenames)*4/5)+(id+1)*seperate_num, len(filenames))]   # 20% scenes for val
+        test_data = read_data("/media/robot/data/WCL/taskgrasp/taskgrasp_image/splits_final/i/0/test_i.txt")
+        part_filenames = test_data
+        # part_filenames = filenames[int(len(filenames)*4/5)+id*seperate_num:min(int(len(filenames)*4/5)+(id+1)*seperate_num, len(filenames))]   # 20% scenes for val
+    
+
+
     # part_filenames = part_filenames[17:18]
     for jj, filename in enumerate(tqdm(part_filenames)):
         scene = filename
@@ -285,6 +303,43 @@ def _fill_grasp_trainval_infos(version="train", pruning=False):
                [-7.07106781e-01, -6.12323400e-17, -7.07106781e-01, 2.81969264e-03],
                [7.07106781e-01, -4.35788200e-33, -7.07106781e-01, 4.05902828e-01],
                [0.00000000e+00, 0.00000000e+00, 0.00000000e+00, 1.00000000e+00]])
+
+        # ====== 动态计算 out ======
+        angle_z = np.radians(-90)
+        angle_y = np.radians(-45)
+
+        Rz = np.array([
+            [np.cos(angle_z), -np.sin(angle_z), 0],
+            [np.sin(angle_z),  np.cos(angle_z), 0],
+            [0,                0,               1],
+        ], dtype=np.float64)
+
+        Ry = np.array([
+            [np.cos(angle_y), 0, np.sin(angle_y)],
+            [0, 1, 0],
+            [-np.sin(angle_y), 0, np.cos(angle_y)],
+        ], dtype=np.float64)
+
+        R_world = Ry @ Rz
+
+        # 构造 T_wc
+        T_wc = np.eye(4, dtype=np.float64)
+        T_wc[:3, :3] = R_world
+
+        # 确定相机位置
+        # 根据包围盒大小自适应距离，确保物体在视野内
+        bbox = point_cloud.get_axis_aligned_bounding_box()
+        extent = np.linalg.norm(np.asarray(bbox.get_extent()))
+        dist = extent * 1.2
+        # dist = max(extent * 2.0, 0.8) # 经验值，至少0.8米
+
+        # 相机位置 = pivot + Z轴方向 * 距离
+        # 确保相机看向 pivot (相机 Z 轴指向后方，所以放在 +Z 处)
+        z_axis = T_wc[:3, 2] 
+        T_wc[:3, 3] = pivot + z_axis * dist
+
+        out = np.linalg.inv(T_wc)
+        # ==========================
 
 
         depth_map_list, ext_list, K_list = [], [], []

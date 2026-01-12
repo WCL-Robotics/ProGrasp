@@ -36,7 +36,8 @@ class RGBDVideoTower(nn.Module):
         self.num_sample_tokens = args.num_sample_tokens
         self.pooling = 'voxelize'
         # self.voxel_size = 0.2
-        self.voxel_size = 0.025
+        # self.voxel_size = 0.025
+        self.voxel_size = 0.0125
         self.vision_tower_name = vision_tower
         self.video_tower_name = video_tower
 
@@ -48,6 +49,9 @@ class RGBDVideoTower(nn.Module):
             self.load_model()
         else:
             self.cfg_only = None
+        # print(f"\n[RGBDVideoTower] Initialized parameters:")
+        # for name, param in self.named_parameters():
+        #     print(f"  {name}: {param.shape}, mean={param.mean().item():.4f}, std={param.std().item():.4f}")
 
     def load_model(self, device_map=None):
         if self.is_loaded:
@@ -64,6 +68,8 @@ class RGBDVideoTower(nn.Module):
         # self.vision_tower.requires_grad_(False)
         self.is_loaded = True
 
+    def initialize(self):
+        self.video_tower.initialize()
 
     def forward(self, features, depths, poses, intrinsics, lengths=None, grasps=None):
         """
@@ -99,7 +105,6 @@ class RGBDVideoTower(nn.Module):
             (xyz_down[..., 1] > self.pc_range[1]) & (xyz_down[..., 1] < self.pc_range[4]) & \
                 (xyz_down[..., 2] > self.pc_range[2]) & (xyz_down[..., 2] < self.pc_range[5])
 
-
         xyz_down[~valid_inds] = xyz_down[~valid_inds] * 0
         video_features_up[~valid_inds.view(B, -1)] = video_features_up[~valid_inds.view(B, -1)] * 0
 
@@ -119,48 +124,46 @@ class RGBDVideoTower(nn.Module):
             pooled_video_features = torch.cat([scatter_mean(video_features_up[b], p2v[b], dim=0) for b in range(len(video_features_up))]) # bn, F
             batch_offset = ((p2v).max(1)[0] + 1).cumsum(0).to(torch.int32)
             
-            # --- 方案1: 3D Heatmap Fusion (Grasp Features) ---
-            grasp_features = None
-            if grasps is not None:
+            # # --- 方案1: 3D Heatmap Fusion (Grasp Features) ---
+            # grasp_features = None
+            # if grasps is not None:
                 
-                grasp_features_list = []
-                sigma = 0.05 # Bandwidth for Gaussian heatmap (meters)
+            #     grasp_features_list = []
+            #     sigma = 0.05 # Bandwidth for Gaussian heatmap (meters)
 
-                for b in range(len(video_features_up)):
-                    # 1. Get voxel features and centers for current batch
-                    # p2v[b] maps points to voxel indices
-                    # video_features_up[b]: (N, C)
-                    v_feat = scatter_mean(video_features_up[b], p2v[b], dim=0) # (Nv, C)
+            #     for b in range(len(video_features_up)):
+            #         # 1. Get voxel features and centers for current batch
+            #         # p2v[b] maps points to voxel indices
+            #         # video_features_up[b]: (N, C)
+            #         v_feat = scatter_mean(video_features_up[b], p2v[b], dim=0) # (Nv, C)
                     
-                    # xyz_down[b]: (N, 3)
-                    xyz_flat = xyz_down[b].view(-1, 3)
-                    v_xyz = scatter_mean(xyz_flat, p2v[b], dim=0) # (Nv, 3)
+            #         # xyz_down[b]: (N, 3)
+            #         xyz_flat = xyz_down[b].view(-1, 3)
+            #         v_xyz = scatter_mean(xyz_flat, p2v[b], dim=0) # (Nv, 3)
 
-                    # 2. Compute Distance: Grasp to Voxels
-                    g_xyz = grasps[b] # (25, 6, 3)
+            #         # 2. Compute Distance: Grasp to Voxels
+            #         g_xyz = grasps[b] # (25, 6, 3)
                     
-                    # (25, 6, 1, 3) - (1, 1, Nv, 3) -> (25, 6, Nv)
-                    # This computes dist from every grasp keypoint to every voxel center
-                    dists = torch.norm(g_xyz.unsqueeze(2) - v_xyz.unsqueeze(0).unsqueeze(0), p=2, dim=-1)
+            #         # (25, 6, 1, 3) - (1, 1, Nv, 3) -> (25, 6, Nv)
+            #         # This computes dist from every grasp keypoint to every voxel center
+            #         dists = torch.norm(g_xyz.unsqueeze(2) - v_xyz.unsqueeze(0).unsqueeze(0), p=2, dim=-1)
                     
-                    # Min distance from any of 6 keypoints to voxel
-                    min_dists = dists.min(dim=1)[0] # (25, Nv)
+            #         # Min distance from any of 6 keypoints to voxel
+            #         min_dists = dists.min(dim=1)[0] # (25, Nv)
 
-                    # 3. Gaussian Heatmap Weights
-                    weights = torch.exp(-(min_dists**2) / (sigma**2))
+            #         # 3. Gaussian Heatmap Weights
+            #         weights = torch.exp(-(min_dists**2) / (sigma**2))
                     
-                    # Normalize attention weights
-                    weights = weights / (weights.sum(dim=1, keepdim=True) + 1e-6)
+            #         # Normalize attention weights
+            #         weights = weights / (weights.sum(dim=1, keepdim=True) + 1e-6)
 
-                    # 4. Integrate Features
-                    # (25, Nv) @ (Nv, C) -> (25, C)
-                    g_feat_b = torch.mm(weights, v_feat)
-                    grasp_features_list.append(g_feat_b)
+            #         # 4. Integrate Features
+            #         # (25, Nv) @ (Nv, C) -> (25, C)
+            #         g_feat_b = torch.mm(weights, v_feat)
+            #         grasp_features_list.append(g_feat_b)
 
-                grasp_features = torch.stack(grasp_features_list, dim=0)
+            #     grasp_features = torch.stack(grasp_features_list, dim=0)
 
-        else:
-            raise NotImplementedError
         
         return pooled_video_features, batch_offset  # (B, num_token, 1024) or (Bn, 1024)
 

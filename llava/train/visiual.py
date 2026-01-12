@@ -581,7 +581,6 @@ def show_grasps_sequential(point_cloud, coordinate_frame, grasps, save_dir=None)
     # 把“主视图”的相机位姿存下来（Cam->World）
     T_wc_main = T_wc.copy()
 
-    cam.extrinsic = np.linalg.inv(T_wc)
 
     try:
         ctr.convert_from_pinhole_camera_parameters(cam, allow_arbitrary=True)
@@ -986,7 +985,9 @@ def visualize_pc_data():
     #                                 height=768,
     #                                 point_show_normal=False)
 
-
+    # ---- 主统计 ----
+    global_min = np.array([np.inf, np.inf, np.inf], dtype=np.float64)
+    global_max = np.array([-np.inf, -np.inf, -np.inf], dtype=np.float64)
 
 
     task_obj = '/media/robot/data/WCL/taskgrasp/taskgrasp_image/scans'
@@ -1000,18 +1001,24 @@ def visualize_pc_data():
 
         pcd = np.load(f"/media/robot/data/WCL/taskgrasp/taskgrasp_image/scans/{file}/fused_pc_clean.npy")
         # Downsample to 8192 points
-        # if pcd.shape[0] > 1024:
-        #     _, indices = farthest_points(pcd[:, :3], 1024, distance_by_translation_point, return_center_indexes=True)
-        #     pcd = pcd[indices]
+        if pcd.shape[0] > 4096:
+            _, indices = farthest_points(pcd[:, :3], 4096, distance_by_translation_point, return_center_indexes=True)
+            pcd = pcd[indices]
 
         # pc_mean = pcd[:, :3].mean(axis=0)
         # pcd[:, :3] -= pc_mean
+        # z_min = pcd[:, 2].min()
+        # eps = 1e-6  # 或者 1e-3 看你后续鲁棒性
+        # pcd[:, 2] += (-z_min + eps)
         # pcd = pcd[:, :3]
-        # pcd is numpy array, use numpy functions or convert to tensor
-        # m = np.max(np.sqrt(np.sum(pcd ** 2, axis=1)))
-        # pcd = pcd / m
 
-        # np.save(f"/media/robot/data/WCL/taskgrasp/taskgrasp_image/scans/{file}/down_pc_1024.npy", pcd)
+        # # 更新全局 min/max
+        # mn = pcd.min(axis=0)
+        # mx = pcd.max(axis=0)
+        # global_min = np.minimum(global_min, mn)
+        # global_max = np.maximum(global_max, mx)
+
+        # np.save(f"/media/robot/data/WCL/taskgrasp/taskgrasp_image/scans/{file}/down_pc_4096.npy", pcd)
         # print("save downsampled point cloud for", file, "with shape:", pcd.shape)
 
         pc_mean = pcd[:, :3].mean(axis=0)
@@ -1094,7 +1101,7 @@ def visualize_pc_data():
                                         point_show_normal=False)
         
         # show_point_sequential(pc_list, coordinate_frame, vertical_grasp_expanded, save_dir=f"/media/robot/data/WCL/taskgrasp/taskgrasp_image/scans/{file}/visual_grasps")
-        # show_grasps_sequential(point_cloud, coordinate_frame, grasps, save_dir=f"/media/robot/data/WCL/taskgrasp/taskgrasp_image/scans/{file}/visual_grasps")
+        show_grasps_sequential(point_cloud, coordinate_frame, grasps, save_dir=f"/media/robot/data/WCL/taskgrasp/taskgrasp_image/scans/{file}/visual_grasps")
         # np.save(f"/media/robot/data/WCL/taskgrasp/taskgrasp_image/scans/{file}/visual_grasps/grasps.npy", grasps)
         
 

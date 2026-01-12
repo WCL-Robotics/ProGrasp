@@ -146,7 +146,7 @@ class SecondVoxelTower(nn.Module):
         point_cloud_range = [-0.5, -0.5, 0, 0.5, 0.5, 1]
         self.voxel_type = 'hard'
         voxel_layer=dict(
-            max_num_points=10,
+            max_num_points=64,
             point_cloud_range=point_cloud_range,
             voxel_size=[0.0125, 0.0125, 0.0125],
             max_voxels=(16000, 40000))
@@ -163,39 +163,72 @@ class SecondVoxelTower(nn.Module):
 
         self.voxel_layer = VoxelizationByGridShape(**voxel_layer)
         self.voxel_encoder = MODELS.build(voxel_encoder)
-        self.middle_encoder = MODELS.build(middle_encoder)     
+        self.middle_encoder = MODELS.build(middle_encoder)
+        # print(f"\n[SecondVoxelTower] Initialized parameters:")
+        # for name, param in self.named_parameters():
+        #     print(f"  {name}: {param.shape}, mean={param.mean().item():.4f}, std={param.std().item():.4f}")
+     
 
+    def stats_pointcloud(self, points_list, q_low=0.01, q_high=0.99):
+        for b, pc in enumerate(points_list):
+            pc = pc.to(torch.float32)
+            assert pc.dim() == 2 and pc.size(1) >= 3, f"pc shape wrong: {pc.shape}"
+            xyz = pc[:, :3]
 
+            # 去掉 NaN/Inf（如果你确定没有，可以删掉）
+            mask = torch.isfinite(xyz).all(dim=1)
+            xyz = xyz[mask]
+            if xyz.numel() == 0:
+                print(f"[B{b}] empty after finite filter")
+                continue
 
-    @torch.no_grad()
+            mn = xyz.min(dim=0).values
+            mx = xyz.max(dim=0).values
+            size = mx - mn
+
+            q1 = torch.quantile(xyz, q_low, dim=0)
+            q2 = torch.quantile(xyz, q_high, dim=0)
+            qsize = q2 - q1
+
+            print(
+                f"[B{b}] N={xyz.shape[0]} | "
+                f"min={mn.tolist()} max={mx.tolist()} size={size.tolist()} | "
+                f"q{int(q_low*100)}={q1.tolist()} q{int(q_high*100)}={q2.tolist()} qsize={qsize.tolist()}"
+            )
+
+    # @torch.no_grad()
     def forward(self, points):
+        with torch.cuda.amp.autocast(enabled=False):
 
-        # voxel_dict = self.voxelize(points)
-        # Convert points to float32 for voxelization (mmdet3d doesn't support bfloat16)
-        points_float32 = [pc.to(torch.float32) for pc in points]
-        voxel_dict = self.voxelize(points_float32)
-        
-        voxel_features = self.voxel_encoder(voxel_dict['voxels'],
-                                            voxel_dict['num_points'],
-                                            voxel_dict['coors'])
-        batch_size = voxel_dict['coors'][-1, 0].item() + 1
-        spatial_features = self.middle_encoder(voxel_features.to(torch.float32), voxel_dict['coors'].to(torch.int32),
-                            batch_size)
-        
-        B, C, D, H, W = spatial_features.shape
-        spatial_features = spatial_features.view(B, C, D * H* W)
-        new_spatial_features, batch_offset = [], []
-        for i in range(B):
-            valid_inds = spatial_features[i].sum(0) > 0
-            valid_spatial_features = spatial_features[i][:, valid_inds]
-            new_spatial_features.append(valid_spatial_features.permute(1,0).to(torch.bfloat16))
-            batch_offset.append(valid_spatial_features.shape[-1]+1)
+            # voxel_dict = self.voxelize(points)
+            # Convert points to float32 for voxelization (mmdet3d doesn't support bfloat16)
+            points_float32 = [pc.to(torch.float32) for pc in points]
+            voxel_dict = self.voxelize(points_float32)
 
-        return new_spatial_features, batch_offset
+            voxel_features = self.voxel_encoder(voxel_dict['voxels'],
+                                                voxel_dict['num_points'],
+                                                voxel_dict['coors'])
+            batch_size = voxel_dict['coors'][-1, 0].item() + 1
+
+            spatial_features = self.middle_encoder(voxel_features.to(torch.float32), voxel_dict['coors'].to(torch.int32),
+                                batch_size)
+            
+            B, C, H, W = spatial_features.shape
+            spatial_features = spatial_features.view(B, C//4, 4 * H* W)
+            # B, C, H, W = spatial_features.shape
+            # spatial_features = spatial_features.view(B, C, H* W)
+            new_spatial_features, batch_offset = [], []
+            for i in range(B):
+                valid_inds = spatial_features[i].abs().sum(0) > 0
+                valid_spatial_features = spatial_features[i][:, valid_inds]
+                new_spatial_features.append(valid_spatial_features.permute(1,0).to(torch.bfloat16))
+                batch_offset.append(valid_spatial_features.shape[-1]+1)
+
+            return new_spatial_features, batch_offset
 
 
 
-    @torch.no_grad()
+    # @torch.no_grad()
     def voxelize(self, points):
         """Apply voxelization to point cloud.
 

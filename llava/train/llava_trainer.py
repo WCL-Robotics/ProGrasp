@@ -343,10 +343,10 @@ class LLaVATrainer(Trainer):
         grasp_outs, outputs = model(**inputs)
 
         # loss_grasp = model.det_head.loss_by_feat(gs, gs_labels, grasp_outs)
-        # loss_grasp = model.det_head.loss_grasp_label(gs_labels, grasp_outs)
-        loss_grasp = dict()
-        loss_grasp['loss_cls'] = torch.tensor(0.0, device="cuda:0")
-        loss_grasp['loss_bbox'] = torch.tensor(0.0, device="cuda:0")
+        loss_grasp = model.det_head.loss_grasp_label(gs_labels, grasp_outs)
+        # loss_grasp = dict()
+        # loss_grasp['loss_cls'] = torch.tensor(0.0, device="cuda:0")
+        # loss_grasp['loss_bbox'] = torch.tensor(0.0, device="cuda:0")
         
         # Save past state if it exists
         # TODO: this needs to be fixed and made cleaner later.

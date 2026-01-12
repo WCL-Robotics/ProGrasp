@@ -12,62 +12,81 @@ from mmdet3d.models.data_preprocessors.voxelize import VoxelizationByGridShape, 
 from position_contrained_6dof_graspnet.models import networks
 import os
 
-# class GraspNet(networks.GraspSamplerVAE):
-#     """
-#     Class to encoder the grasping pose.
-#     """
-#     def __init__(self):
-#         # Initialize parent class with custom parameters directly
-#         super(GraspNet, self).__init__(
-#             model_scale=1, 
-#             pointnet_radius=0.3, 
-#             pointnet_nclusters=128, 
-#             latent_size=2, 
-#             device="cuda"
-#         )
-#         # Initialize weights for the current instance (self)
-#         networks.init_weights(self, "normal", 0.02)
-
-#     def encode(self, pc_xyz, grasps):
-#         with torch.cuda.amp.autocast(enabled=False):
-#             pc_xyz_expand = pc_xyz.unsqueeze(0).repeat(grasps.shape[0], 1, 1)
-#             pc_xyz_expand = pc_xyz_expand.contiguous().to(dtype=torch.float32)
-#             grasp_features = grasps.unsqueeze(1).expand(-1, pc_xyz_expand.shape[1], -1)
-#             features = torch.cat(
-#                 (pc_xyz_expand, grasp_features),
-#                 -1)
-
-#             # features = torch.cat((features, position_contraint_feature), -1)
-#             features = features.transpose(-1, 1).contiguous()
-            
-#             for module in self.encoder[0]:
-#                 pc_xyz_expand, features = module(pc_xyz_expand, features)
-#                 print(f"[DEBUG] After Layer: Features Min={features.min().item():.8f}, Max={features.max().item():.8f}, Mean={features.mean().item():.4f}")
-        
-#         temp = self.encoder[1](features.squeeze(-1))
-#         return self.encoder[1](features.squeeze(-1))
-
-#     def forward(self, pc, grasps):
-#         return self.encode(pc, grasps)
-
 class GraspNet(nn.Module):
-    def __init__(self):
+    """
+    Class to encoder the grasping pose.
+    """
+    def __init__(self, d_model=4096, num_heads=8, attn_dropout=0.1):
+        # Initialize parent class with custom parameters directly
         super(GraspNet, self).__init__()
-        self.initialize()
+        self.initialize(d_model, num_heads, attn_dropout)
 
-    def initialize(self):
-        self.net = networks.define_classifier(
-            1, 0.1, 512, 2, [], "normal", 0.02, "cuda"
+    def initialize(self, d_model, num_heads, attn_dropout):
+        self.type_img   = nn.Parameter(torch.zeros(1, d_model))
+        self.type_voxel = nn.Parameter(torch.zeros(1, d_model))
+        nn.init.normal_(self.type_img,   mean=0.0, std=0.02)
+        nn.init.normal_(self.type_voxel, mean=0.0, std=0.02)
+
+        self.grasp_mlp = nn.Sequential(
+            nn.Linear(3, 256), nn.GELU(),
+            nn.Linear(256, 1024), nn.GELU(),
+            nn.Linear(1024, d_model)
+        )
+        
+        # --- cross-attn: Q attends to memory(K,V) ---
+        self.cross_attn = nn.MultiheadAttention(
+            embed_dim=d_model, num_heads=num_heads, dropout=attn_dropout, batch_first=True
         )
 
-    def forward(self, pc, grasps):
-        # print(f"[GraspNet] Initialization check:")
-        # for name, param in self.net.named_parameters():
-        #     print(f"[GraspNet] Param: {name}, Mean: {param.data.abs().mean().item():.6f}, Std: {param.data.std().item():.6f}")
+        # optional: stabilize training
+        self.q_norm = nn.LayerNorm(d_model)
+        self.mem_norm = nn.LayerNorm(d_model)
 
-        with torch.cuda.amp.autocast(enabled=False):
-            result = self.net.encode(pc, grasps)
-        return result
+    def encode_grasps(self, grasps):
+        """
+        grasps: (25, 6, 3)
+        return: (25, D)
+        """
+        x = self.grasp_mlp(grasps)     # (25,6,D)
+        q = x.mean(dim=1)              # (25,D)
+        return q
+
+    def forward(self, image_features, voxel_features, grasps):
+        grasps = grasps.to(torch.bfloat16)
+        img = image_features + self.type_img          # (Limg,D) + (D,)
+        vox = voxel_features + self.type_voxel        # (Lvox,D)
+        mem = torch.cat([img, vox], dim=0)            # (L, D), L=Limg+Lvox
+
+        # --- grasp queries ---
+        q = self.encode_grasps(grasps)                # (25,D)
+
+        # --- cross-attn expects (N, L, D) with batch_first=True ---
+        Q = self.q_norm(q).unsqueeze(0)               # (1,25,D)
+        M = self.mem_norm(mem).unsqueeze(0)           # (1,L,D)
+
+        out, _ = self.cross_attn(Q, M, M)             # (1,25,D)
+        out = out.squeeze(0)                          # (25,D)
+        
+        return out
+
+# class GraspNet(nn.Module):
+#     def __init__(self):
+#         super(GraspNet, self).__init__()
+#         self.initialize()
+
+#     def initialize(self):
+#         self.net = networks.define_classifier(
+#             1, 0.1, 512, 2, [], "normal", 0.02, "cuda"
+#         )
+
+#     def forward(self, pc, grasps):
+#         # print(f"[GraspNet] Initialization check:")
+#         # for name, param in self.net.named_parameters():
+#         #     print(f"[GraspNet] Param: {name}, Mean: {param.data.abs().mean().item():.6f}, Std: {param.data.std().item():.6f}")
+
+#         with torch.cuda.amp.autocast(enabled=False):
+#             result = self.net.encode(pc, grasps)
+#         return result
 
 if __name__ == "__main__":
     # task_obj = '/media/robot/data/WCL/taskgrasp/taskgrasp_image/scans'

@@ -43,6 +43,9 @@ class LlavaMetaModel:
         if getattr(config, "mm_video_tower", None) is not None:
             self.video_tower = build_video_tower(config, delay_load=False)
 
+        if getattr(config, "mm_voxel_tower", None) is not None:
+            self.voxel_tower = build_voxel_tower(config)
+
         if getattr(config, "mm_grasp_tower", None) is not None:
             self.grasp_tower = build_grasp_tower(config, delay_load=False)
 
@@ -265,23 +268,17 @@ class LlavaMetaForCausalLM(ABC):
         vision_tower = self.get_vision_tower()
         voxel_tower = self.get_voxel_tower()
         grasp_tower = self.get_grasp_tower()
+
         if vision_tower is None or images is None or input_ids.shape[1] == 1:
             return input_ids, position_ids, attention_mask, past_key_values, None, labels
         
         if pure_imgs is not None:
             pure_img_features = self.encode_images(images[:, 0])
-        grasp_features = []
-        # grasp = torch.stack(grasp, dim=0)
-        # self.encode_grasp_rgbd(images, depths, poses, intrinsics, lengths=lengths, grasps=grasp)
-        # for index in range(len(grasp)):
-        #     grasp_feature = grasp_tower(pcs[index], grasp[index])  # (num_grasps, D)
-        #     grasp_feature = grasp_feature.to(dtype=self.dtype)
-        #     grasp_features.append(grasp_feature)
 
         if images.ndim == 5 and depths is not None:
             video_features, batch_offset = self.encode_rgbd_videos(images, depths, poses, intrinsics, lengths=lengths)
-            if voxel_tower is not None and pcs is not None:
-                voxel_features, voxel_batch_offset = self.encode_points(pcs)
+            # if voxel_tower is not None and pcs is not None:
+            #     voxel_features, voxel_batch_offset = self.encode_points(pcs)
             if batch_offset is not None:
                 image_features = []
                 idx = 0
@@ -291,8 +288,8 @@ class LlavaMetaForCausalLM(ABC):
                         indices = torch.randperm(feats.size(0))[:2560]
                         feats = feats[indices]
                     idx = b
-                    if voxel_tower is not None and pcs is not None:
-                        feats = torch.cat((feats, voxel_features[i_b]), dim=0)
+                    # if voxel_tower is not None and pcs is not None:
+                    #     feats = torch.cat((feats, voxel_features[i_b]), dim=0)
                     image_features.append(feats)
             else:
                 image_features = video_features
@@ -355,6 +352,18 @@ class LlavaMetaForCausalLM(ABC):
                 raise ValueError(f"Unexpected mm_patch_merge_type: {self.config.mm_patch_merge_type}")
         else:
             image_features = self.encode_images(images)  # (B, N, 576)
+
+        grasp_features = []
+        # grasp = torch.stack(grasp, dim=0)
+        # self.encode_grasp_rgbd(images, depths, poses, intrinsics, lengths=lengths, grasps=grasp)
+        
+        if voxel_tower is not None and pcs is not None:
+            voxel_features, voxel_batch_offset = self.encode_points(pcs)
+        for index in range(len(grasp)):
+            grasp_feature = grasp_tower(image_features[index], voxel_features[index], grasp[index])
+            grasp_feature = grasp_feature.to(dtype=self.dtype)
+            grasp_features.append(grasp_feature)
+
 
         if pure_imgs is not None:
             if type(image_features) is list:

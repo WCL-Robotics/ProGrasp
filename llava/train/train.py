@@ -41,8 +41,8 @@ from llava.mm_utils import tokenizer_image_token, map_obj, PlainBoxFormatter, to
 from PIL import Image
 
 # from llava.train.GraspcotDataset import GraspcotDataset_Train
-from llava.train.Graspcot_Task_Dataset import GraspcotDataset_Train
-# from llava.train.Graspcot_Grasp_Dataset import GraspcotDataset_Train
+# from llava.train.Graspcot_Task_Dataset import GraspcotDataset_Train
+from llava.train.Graspcot_Grasp_Dataset import GraspcotDataset_Train
 
 from datetime import datetime
 import shutil
@@ -1052,13 +1052,13 @@ def train(attn_implementation=None):
         )
     model.config.use_cache = False
 
-    # if model_args.lora_model_path is not None:
-    #     from peft import PeftModel
-    #     print(f"Loading LoRA from {model_args.lora_model_path}")
-    #     model = PeftModel.from_pretrained(model, model_args.lora_model_path)
-    #     print("Merging LoRA weights...")
-    #     model = model.merge_and_unload()
-    #     print("LoRA merged and unloaded")
+    if model_args.lora_model_path is not None:
+        from peft import PeftModel
+        print(f"Loading LoRA from {model_args.lora_model_path}")
+        model = PeftModel.from_pretrained(model, model_args.lora_model_path)
+        print("Merging LoRA weights...")
+        model = model.merge_and_unload()
+        print("LoRA merged and unloaded")
 
     if model_args.freeze_backbone:
         model.model.requires_grad_(False)
@@ -1076,23 +1076,23 @@ def train(attn_implementation=None):
                 output.requires_grad_(True)
             model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
 
-    if training_args.lora_enable:
-        from peft import LoraConfig, get_peft_model
-        lora_config = LoraConfig(
-            r=training_args.lora_r,
-            lora_alpha=training_args.lora_alpha,
-            target_modules=find_all_linear_names(model),
-            lora_dropout=training_args.lora_dropout,
-            bias=training_args.lora_bias,
-            task_type="CAUSAL_LM",
-        )
-        if training_args.bits == 16:
-            if training_args.bf16:
-                model.to(torch.bfloat16)
-            if training_args.fp16:
-                model.to(torch.float16)
-        rank0_print("Adding LoRA adapters...")
-        model = get_peft_model(model, lora_config)
+    # if training_args.lora_enable:
+    #     from peft import LoraConfig, get_peft_model
+    #     lora_config = LoraConfig(
+    #         r=training_args.lora_r,
+    #         lora_alpha=training_args.lora_alpha,
+    #         target_modules=find_all_linear_names(model),
+    #         lora_dropout=training_args.lora_dropout,
+    #         bias=training_args.lora_bias,
+    #         task_type="CAUSAL_LM",
+    #     )
+    #     if training_args.bits == 16:
+    #         if training_args.bf16:
+    #             model.to(torch.bfloat16)
+    #         if training_args.fp16:
+    #             model.to(torch.float16)
+    #     rank0_print("Adding LoRA adapters...")
+    #     model = get_peft_model(model, lora_config)
 
     if 'mpt' in model_args.model_name_or_path:
         tokenizer = transformers.AutoTokenizer.from_pretrained(
@@ -1149,6 +1149,7 @@ def train(attn_implementation=None):
         if model_args.video_tower is not None:
             video_tower = model.get_video_tower()  # class not str
             video_tower.to(dtype=torch.bfloat16 if training_args.bf16 else torch.float32, device=training_args.device)
+            video_tower.initialize()
             promp_encoder = model.get_prompt_encoder()
             promp_encoder.to(dtype=torch.bfloat16 if training_args.bf16 else torch.float32, device=training_args.device)
 
@@ -1158,14 +1159,17 @@ def train(attn_implementation=None):
 
         if model_args.voxel_tower is not None:
             voxel_tower = model.get_voxel_tower()  # class not str
-            voxel_tower.to(dtype=torch.bfloat16 if training_args.bf16 else torch.float32, device=training_args.device)
+            voxel_tower.to(dtype=torch.float32, device=training_args.device)
+            # voxel_tower.to(dtype=torch.bfloat16 if training_args.bf16 else torch.float32, device=training_args.device)
 
         if model_args.grasp_tower is not None:
             grasp_tower = model.get_grasp_tower()  # class not str
-            grasp_tower.initialize()
-            grasp_tower.to(dtype=torch.float32, device=training_args.device)
-            # grasp_tower.to(dtype=torch.bfloat16 if training_args.bf16 else torch.float32, device=training_args.device)
+            grasp_tower.initialize(d_model=4096, num_heads=8, attn_dropout=0.1)
+            # grasp_tower.to(dtype=torch.float32, device=training_args.device)
+            grasp_tower.to(dtype=torch.bfloat16 if training_args.bf16 else torch.float32, device=training_args.device)
         for p in model.get_model().grasp_tower.parameters():
+            p.requires_grad = False
+        for p in model.get_model().voxel_tower.parameters():
             p.requires_grad = False
 
     # ======================================================================================
@@ -1191,13 +1195,13 @@ def train(attn_implementation=None):
                     if 'lora_' in name:
                         p.requires_grad = True
             # =========================================================================
-            if model_args.tune_video_tower:
-                for p in model.get_model().video_tower.parameters():
-                    p.requires_grad = True
+            # if model_args.tune_video_tower:
+            for p in model.get_model().video_tower.parameters():
+                p.requires_grad = True
             # =========================================================================                              
-            if model_args.tune_voxel_tower:
-                for p in model.get_model().voxel_tower.parameters():
-                    p.requires_grad = True
+            # if model_args.tune_voxel_tower:
+            for p in model.get_model().voxel_tower.parameters():
+                p.requires_grad = True
             # =========================================================================
 
             #         
@@ -1227,8 +1231,8 @@ def train(attn_implementation=None):
     det_head.to(dtype=torch.bfloat16 if training_args.bf16 else torch.float32, device=training_args.device)
 
     for p in model.det_head.parameters():
-        # p.requires_grad = True
-        p.requires_grad = False
+        p.requires_grad = True
+        # p.requires_grad = False
 
     model.config.use_dialogue = False 
     if data_args.dialogue:
