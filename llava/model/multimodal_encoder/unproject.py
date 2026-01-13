@@ -15,13 +15,13 @@ def unproject(intrinsics, poses, depths):
     B, V, H, W = depths.shape 
     # (B, V, 1)
     fx, fy, px, py = intrinsics[..., 0, 0][..., None], intrinsics[..., 1, 1][..., None], intrinsics[..., 0, 2][..., None], intrinsics[..., 1, 2][..., None]
-    sx = W / 1024.0
-    sy = H / 768.0
+    # sx = W / 1024.0
+    # sy = H / 768.0
 
-    fx = fx * sx
-    fy = fy * sy
-    px = px * sx
-    py = py * sy
+    # fx = fx * sx
+    # fy = fy * sy
+    # px = px * sx
+    # py = py * sy
 
     # y = torch.arange(0, H).to(depths.device) / H
     # x = torch.arange(0, W).to(depths.device) / W

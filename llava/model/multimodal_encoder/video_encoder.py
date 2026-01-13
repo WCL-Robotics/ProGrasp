@@ -49,6 +49,7 @@ class RGBDVideoTower(nn.Module):
             self.load_model()
         else:
             self.cfg_only = None
+
         # print(f"\n[RGBDVideoTower] Initialized parameters:")
         # for name, param in self.named_parameters():
         #     print(f"  {name}: {param.shape}, mean={param.mean().item():.4f}, std={param.std().item():.4f}")
@@ -90,6 +91,19 @@ class RGBDVideoTower(nn.Module):
         assert intrinsics.dim() == 4
 
         feat_xyz, xyz = backprojector_dataloader([features.flatten(0, 1)], depths, poses, intrinsics)
+        # print("[Visualizing xyz in VideoEncoder]")
+        # pcd = o3d.geometry.PointCloud()
+        # # xyz shape likely (B, N, 3) or (B*V, N, 3). Flatten to (M, 3) for valid parts
+        # xyz = xyz[0].to(torch.float32)
+        # xyz = xyz.reshape(336*336*4,3)
+        # pcd_np = xyz.detach().cpu().numpy().reshape(-1, 3)
+        # # 简单过滤掉全0点或无效点以便看得更清楚
+        # valid_mask = np.abs(pcd_np).sum(axis=1) > 1e-6
+        # pcd.points = o3d.utility.Vector3dVector(pcd_np[valid_mask])
+        
+        # # 添加坐标轴以便观察方位
+        # coordinate_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.5, origin=[0, 0, 0])
+        # o3d.visualization.draw_geometries([pcd, coordinate_frame], window_name="XYZ Debug Visualization")
 
         # (B, V*H*W, C)
         video_features = self.video_tower([features.flatten(0, 1)], [feat_xyz.flatten(0, 1)], (B, V))[0]

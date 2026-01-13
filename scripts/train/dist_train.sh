@@ -59,7 +59,7 @@ python -u llava/train/train_mem.py \
     --mm_use_im_patch_token False \
     --bf16 True \
     --output_dir ./checkpoints/llava-graspcot-lora\
-    --num_train_epochs 70 \
+    --num_train_epochs 35 \
     --per_device_train_batch_size 16 \
     --per_device_eval_batch_size 4 \
     --gradient_accumulation_steps 2 \

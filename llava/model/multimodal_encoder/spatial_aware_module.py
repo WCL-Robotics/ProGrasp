@@ -47,16 +47,17 @@ class SpatialAwareModule(nn.Module):
             
             # feature: (B*V, C, H, W) -> mean -> (B*V, C)
             # xyz: (B*V, H, W, 3) -> mean -> (B*V, 3)
-            f_pool = feature.mean(dim=[2, 3])
-            xyz_pool = xyz.mean(dim=[1, 2])
-            gate_in = torch.cat([f_pool, xyz_pool], dim=-1) # (B*V, C+3)
-            view_weight = (self.gate_net(gate_in)+ 1.0) / 2.0
-            view_weight = view_weight.view(bs, v, 1, 1, 1)
+            # f_pool = feature.mean(dim=[2, 3])
+            # xyz_pool = xyz.mean(dim=[1, 2])
+            # gate_in = torch.cat([f_pool, xyz_pool], dim=-1) # (B*V, C+3)
+            # view_weight = (self.gate_net(gate_in)+ 1.0) / 2.0
+            # view_weight = view_weight.view(bs, v, 1, 1, 1)
 
             feature = feature.reshape(bs, v, f, h, w).permute(0, 1, 3, 4, 2)
             xyz = xyz.reshape(bs, v, h, w, 3)
             pos_embed = self.encode_pe(xyz) # (B, V, H, W, F)
-            feature = (feature  + pos_embed) * view_weight
+            # feature = (feature  + pos_embed) * view_weight
+            feature = feature  + pos_embed
             feature = feature.flatten(1, 3)  # (B, V*H*W, F)
             out_features.append(feature)
         return out_features
