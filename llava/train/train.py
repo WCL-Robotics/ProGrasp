@@ -1148,8 +1148,8 @@ def train(attn_implementation=None):
     
         if model_args.video_tower is not None:
             video_tower = model.get_video_tower()  # class not str
-            video_tower.to(dtype=torch.bfloat16 if training_args.bf16 else torch.float32, device=training_args.device)
             video_tower.initialize()
+            video_tower.to(dtype=torch.bfloat16 if training_args.bf16 else torch.float32, device=training_args.device)
             promp_encoder = model.get_prompt_encoder()
             promp_encoder.to(dtype=torch.bfloat16 if training_args.bf16 else torch.float32, device=training_args.device)
 
@@ -1165,12 +1165,13 @@ def train(attn_implementation=None):
         if model_args.grasp_tower is not None:
             grasp_tower = model.get_grasp_tower()  # class not str
             grasp_tower.initialize(d_model=4096, num_heads=8, attn_dropout=0.1)
-            # grasp_tower.to(dtype=torch.float32, device=training_args.device)
-            grasp_tower.to(dtype=torch.bfloat16 if training_args.bf16 else torch.float32, device=training_args.device)
+            grasp_tower.to(dtype=torch.float32, device=training_args.device)
+            # grasp_tower.initialize(d_model=4096, num_heads=8, attn_dropout=0.1)
+            # grasp_tower.to(dtype=torch.bfloat16 if training_args.bf16 else torch.float32, device=training_args.device)
         for p in model.get_model().grasp_tower.parameters():
             p.requires_grad = False
-        for p in model.get_model().voxel_tower.parameters():
-            p.requires_grad = False
+        # for p in model.get_model().voxel_tower.parameters():
+        #     p.requires_grad = False
 
     # ======================================================================================
 
@@ -1199,9 +1200,9 @@ def train(attn_implementation=None):
             for p in model.get_model().video_tower.parameters():
                 p.requires_grad = True
             # =========================================================================                              
-            # if model_args.tune_voxel_tower:
-            for p in model.get_model().voxel_tower.parameters():
-                p.requires_grad = True
+            if model_args.tune_voxel_tower:
+                for p in model.get_model().voxel_tower.parameters():
+                    p.requires_grad = True
             # =========================================================================
 
             #         

@@ -248,7 +248,7 @@ def _fill_grasp_trainval_infos(version="train", pruning=False):
         # gs = Rts.reshape(Rts.shape[0], -1)
         # gs = torch.from_numpy(gs).to(torch.float32)
 
-        dz = -pc[:, 2].min() + eps  # 你对点云加的这个值
+        dz = -z_min + eps  # 你对点云加的这个值
         T_shift = np.eye(4, dtype=np.float32)
         T_shift[2, 3] = dz
         Rts = T_shift[None, :, :] @ Rts
@@ -508,7 +508,7 @@ def parse_args():
     # parser.add_argument('--version', required=True)
     # parser.add_argument('--pruning', action="store_true")
     # parser.add_argument("--id", type=int, help="dataset is too big and needs ids to seperate.")
-    parser.add_argument('--version', default="test")
+    parser.add_argument('--version', default="train")
     parser.add_argument('--pruning', default=True)
     parser.add_argument("--id", type=int, default=0)
     args = parser.parse_args()

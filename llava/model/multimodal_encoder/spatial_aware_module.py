@@ -31,13 +31,14 @@ class SpatialAwareModule(nn.Module):
         
     def forward(
         self, feature_list=None, xyz_list=None,
-        shape=None, multiview_data=None, voxelize=None,
+        shape=None, valid_mask_feat=None, multiview_data=None, voxelize=None,
         ) -> torch.Tensor:
         """
         Args:
             feature_list: list of tensor (B*V, C, H, W)
             xyz_list: list of tensor (B*V, H, W, 3)
             shape: (B, V)
+            valid_mask_feat: tensor (B*V, H, W, 1)
         """
         out_features = []
         bs, v = shape
@@ -45,19 +46,28 @@ class SpatialAwareModule(nn.Module):
             # B*V, F, H, W -> B, V, F, H, W -> B, V, H, W, F
             bv, f, h, w = feature.shape
             
-            # feature: (B*V, C, H, W) -> mean -> (B*V, C)
-            # xyz: (B*V, H, W, 3) -> mean -> (B*V, 3)
-            # f_pool = feature.mean(dim=[2, 3])
-            # xyz_pool = xyz.mean(dim=[1, 2])
-            # gate_in = torch.cat([f_pool, xyz_pool], dim=-1) # (B*V, C+3)
-            # view_weight = (self.gate_net(gate_in)+ 1.0) / 2.0
-            # view_weight = view_weight.view(bs, v, 1, 1, 1)
+            # 1. 调整维度以便拼接: (B*V, H, W, C) + (B*V, H, W, 3) -> (B*V, H, W, C+3)
+            f_perm = feature.permute(0, 2, 3, 1) # (bv, h, w, f)
+            gate_in = torch.cat([f_perm, xyz], dim=-1) # (bv, h, w, f+3)
+            
+            # 2. 逐像素计算权重 (Projection)
+            # (bv, h, w, f+3) -> Linear -> (bv, h, w, 1)
+            pixel_weight = (self.gate_net(gate_in) + 1.0) / 2.0
+            pixel_weight = pixel_weight * valid_mask_feat
+            
+            # 3. Reshape 权重以广播到 Feature
+            # (bv, h, w, 1) -> (bs, v, h, w, 1)
+            pixel_weight = pixel_weight.view(bs, v, h, w, 1)
+            valid_mask_feat = valid_mask_feat.view(bs, v, h, w, 1)
 
-            feature = feature.reshape(bs, v, f, h, w).permute(0, 1, 3, 4, 2)
+            # 4. 特征融合
+            feature = feature.reshape(bs, v, f, h, w).permute(0, 1, 3, 4, 2) #(bs, v, h, w, f)
             xyz = xyz.reshape(bs, v, h, w, 3)
             pos_embed = self.encode_pe(xyz) # (B, V, H, W, F)
-            # feature = (feature  + pos_embed) * view_weight
-            feature = feature  + pos_embed
+            
+            # 应用逐像素权重
+            feature = (feature + pos_embed) * valid_mask_feat
+            
             feature = feature.flatten(1, 3)  # (B, V*H*W, F)
             out_features.append(feature)
         return out_features

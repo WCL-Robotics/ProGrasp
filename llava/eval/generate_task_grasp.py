@@ -173,12 +173,12 @@ def eval_model(args):
     model.eval()
 
 
-    # if hasattr(model, 'model') and hasattr(model.model, 'voxel_tower'):
-    #     print("Forcing voxel_tower to TRAIN mode due to missing BatchNorm stats...")
-    #     model.model.voxel_tower.train()
-    # elif hasattr(model, 'voxel_tower'):
-    #     print("Forcing voxel_tower to TRAIN mode due to missing BatchNorm stats...")
-    #     model.voxel_tower.train()
+    # if hasattr(model, 'model') and hasattr(model.model, 'grasp_tower'):
+    #     print("Forcing grasp_tower to TRAIN mode due to missing BatchNorm stats...")
+    #     model.model.grasp_tower.train()
+    # elif hasattr(model, 'grasp_tower'):
+    #     print("Forcing grasp_tower to TRAIN mode due to missing BatchNorm stats...")
+    #     model.grasp_tower.train()
 
     # DEBUG: Check if BN stats are loaded correctly
     # print("DEBUG: Inspecting Grasp Tower BN Stats...")

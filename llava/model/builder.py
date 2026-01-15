@@ -71,9 +71,12 @@ def load_pretrained_grasp_model(model_path, model_base, model_name, torch_dtype=
 
             # Force grasp_tower to float32 AFTER merging LoRA
             # Because merge_and_unload might cast everything to base model's dtype (bf16/fp16)
-            if hasattr(model.get_model(), 'voxel_tower') and model.get_model().voxel_tower is not None:
-                print("Forcing voxel_tower to float32...")
-                model.get_model().voxel_tower.to(dtype=torch.float32)
+            # if hasattr(model.get_model(), 'voxel_tower') and model.get_model().voxel_tower is not None:
+            #     print("Forcing voxel_tower to float32...")
+            #     model.get_model().voxel_tower.to(dtype=torch.float32)
+            if hasattr(model.get_model(), 'grasp_tower') and model.get_model().voxel_tower is not None:
+                print("Forcing grasp_tower to float32...")
+                model.get_model().grasp_tower.to(dtype=torch.float32)
 
             # if os.path.exists(os.path.join(model_path, 'non_lora_trainables.bin')):
             #     non_lora_trainables = torch.load(os.path.join(model_path, 'non_lora_trainables.bin'), map_location='cpu')
@@ -98,7 +101,7 @@ def load_pretrained_grasp_model(model_path, model_base, model_name, torch_dtype=
                 
                 new_weights = {}
                 for k, v in mm_projector_weights.items():
-                    if 'voxel_tower' in k:
+                    if 'grasp_tower' in k:
                         new_weights[k] = v.to(torch.float32)
                     else:
                         new_weights[k] = v.to(torch.float16)

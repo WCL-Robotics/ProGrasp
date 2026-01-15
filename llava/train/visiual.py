@@ -1001,9 +1001,9 @@ def visualize_pc_data():
 
         pcd = np.load(f"/media/robot/data/WCL/taskgrasp/taskgrasp_image/scans/{file}/fused_pc_clean.npy")
         # Downsample to 8192 points
-        if pcd.shape[0] > 4096:
-            _, indices = farthest_points(pcd[:, :3], 4096, distance_by_translation_point, return_center_indexes=True)
-            pcd = pcd[indices]
+        # if pcd.shape[0] > 4096:
+        #     _, indices = farthest_points(pcd[:, :3], 4096, distance_by_translation_point, return_center_indexes=True)
+        #     pcd = pcd[indices]
 
         # pc_mean = pcd[:, :3].mean(axis=0)
         # pcd[:, :3] -= pc_mean
@@ -1073,10 +1073,10 @@ def visualize_pc_data():
             #     all_grasp_meshes.append(sphere)
             
             
-        Grasp_confidence_level = np.load("/home/robot/WCL/GraspCoT/preds_list.npy", allow_pickle=True)
-        Grasp_confidence_level = Grasp_confidence_level[10]
-        conf = Grasp_confidence_level.detach().cpu().numpy()
-        top3_idx = np.argsort(conf)[-3:][::-1]
+        # Grasp_confidence_level = np.load("/home/robot/WCL/GraspCoT/preds_list.npy", allow_pickle=True)
+        # Grasp_confidence_level = Grasp_confidence_level[10]
+        # conf = Grasp_confidence_level.detach().cpu().numpy()
+        # top3_idx = np.argsort(conf)[-3:][::-1]
         # for i in range(0, 3):
         #     grasp_mesh = get_gripper_control_points_o3d(grasps[top3_idx[i]])
         #     all_grasp_meshes.extend(grasp_mesh)
@@ -1094,14 +1094,14 @@ def visualize_pc_data():
             origin=[0, 0, 0]  # 原点位置
         )
 
-        o3d.visualization.draw_geometries([point_cloud, coordinate_frame] + all_grasp_meshes, 
+        o3d.visualization.draw_geometries([point_cloud, coordinate_frame], 
                                         window_name="Point Cloud with RGB Colors and Origin",
                                         width=1024, 
                                         height=768,
                                         point_show_normal=False)
         
         # show_point_sequential(pc_list, coordinate_frame, vertical_grasp_expanded, save_dir=f"/media/robot/data/WCL/taskgrasp/taskgrasp_image/scans/{file}/visual_grasps")
-        show_grasps_sequential(point_cloud, coordinate_frame, grasps, save_dir=f"/media/robot/data/WCL/taskgrasp/taskgrasp_image/scans/{file}/visual_grasps")
+        # show_grasps_sequential(point_cloud, coordinate_frame, grasps, save_dir=f"/media/robot/data/WCL/taskgrasp/taskgrasp_image/scans/{file}/visual_grasps")
         # np.save(f"/media/robot/data/WCL/taskgrasp/taskgrasp_image/scans/{file}/visual_grasps/grasps.npy", grasps)
         
 

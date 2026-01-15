@@ -49,7 +49,6 @@ python -u llava/train/train_mem.py \
     --cot True \
     --vision_tower pretrained_llms/clip-vit-large-patch14-336 \
     --video_tower SpatialAwareModule \
-    --voxel_tower SecondVoxelnet \
     --grasp_tower GraspNet \
     --num_sample_tokens 1152 \
     --mm_projector_type mlp2x_gelu \
@@ -60,7 +59,7 @@ python -u llava/train/train_mem.py \
     --bf16 True \
     --output_dir ./checkpoints/llava-graspcot-lora\
     --num_train_epochs 35 \
-    --per_device_train_batch_size 16 \
+    --per_device_train_batch_size 8 \
     --per_device_eval_batch_size 4 \
     --gradient_accumulation_steps 2 \
     --evaluation_strategy no \

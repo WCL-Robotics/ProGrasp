@@ -42,6 +42,10 @@ def unproject(intrinsics, poses, depths):
     vv = vv[None, None].repeat(B, V, 1, 1).flatten(2).float()
 
     z = depths.flatten(2).float()
+    
+    # 过滤无效深度，置为 NaN，以便后续流程用 mask 识别
+    valid_z_mask = z > 1e-4
+    z = torch.where(valid_z_mask, z, torch.tensor(float('nan'), device=z.device, dtype=z.dtype))
 
     x = (uu - px) * z / fx
     y = (vv - py) * z / fy
@@ -140,6 +144,15 @@ def voxelize(xyz, voxel_size=0.28):
     xyz = xyz.reshape(B, V*H*W, 3)
     p2v = voxelization(xyz, voxel_size)
     return p2v
+
+def voxelize_points(xyz_bn3, voxel_size=0.28):
+    """
+    Inputs:
+        xyz_bn3: tensor [B, N, 3]
+    Outputs:
+        p2v: tensor [B, N]
+    """
+    return voxelization(xyz_bn3, voxel_size)
 
 
 def ravel_hash_vec(arr):

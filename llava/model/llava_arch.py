@@ -357,10 +357,10 @@ class LlavaMetaForCausalLM(ABC):
         # grasp = torch.stack(grasp, dim=0)
         # self.encode_grasp_rgbd(images, depths, poses, intrinsics, lengths=lengths, grasps=grasp)
         
-        if voxel_tower is not None and pcs is not None:
-            voxel_features, voxel_batch_offset = self.encode_points(pcs)
+        # if voxel_tower is not None and pcs is not None:
+        #     voxel_features, voxel_batch_offset = self.encode_points(pcs)
         for index in range(len(grasp)):
-            grasp_feature = grasp_tower(image_features[index], voxel_features[index], grasp[index])
+            grasp_feature = grasp_tower(image_features[index], pcs[index], grasp[index])
             grasp_feature = grasp_feature.to(dtype=self.dtype)
             grasp_features.append(grasp_feature)
 

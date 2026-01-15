@@ -148,7 +148,7 @@ class GraspSamplerVAE(GraspSampler):
             latent_size, device)
 
         self.create_encoder(model_scale, pointnet_radius,
-                            pointnet_nclusters, 4)
+                            pointnet_nclusters, 21)
 
         # self.create_decoder(model_scale, pointnet_radius, pointnet_nclusters,
         #                     latent_size + 3 + 1)
@@ -173,39 +173,40 @@ class GraspSamplerVAE(GraspSampler):
         logvar = nn.Linear(input_size, latent_size)
         self.latent_space = nn.ModuleList([mu, logvar])
 
-    # def encode(self, pc_xyz, grasps):
-    #     pc_xyz_expand = pc_xyz.unsqueeze(0).repeat(grasps.shape[0], 1, 1)
-    #     grasp_features = grasps.unsqueeze(1).expand(-1, pc_xyz_expand.shape[1], -1)
-    #     features = torch.cat(
-    #         (pc_xyz_expand, grasp_features),
-    #         -1)
-    #     features = features.transpose(-1, 1).contiguous()
-    #     for module in self.encoder[0]:
-    #         pc_xyz_expand, features = module(pc_xyz_expand, features)
-
-    #     return self.encoder[1](features.squeeze(-1))
-
     def encode(self, pc_xyz, grasps):
+        grasps = grasps.view(grasps.shape[0], -1)
         pc_xyz_expand = pc_xyz.unsqueeze(0).repeat(grasps.shape[0], 1, 1)
-        grasp_features = grasps
+        grasp_features = grasps.unsqueeze(1).expand(-1, pc_xyz_expand.shape[1], -1)
         features = torch.cat(
             (pc_xyz_expand, grasp_features),
-            1)
-            
-        # Create labels: 0 for point cloud points, 1 for grasp features
-        pc_labels = torch.zeros(pc_xyz_expand.shape[0], pc_xyz_expand.shape[1], 1, device=features.device)
-        grasp_labels = torch.ones(grasp_features.shape[0], grasp_features.shape[1], 1, device=features.device)
-        
-        labels = torch.cat((pc_labels, grasp_labels), 1)
-        
-        # Concatenate features and labels -> [25, 4102, 4]
-        features = torch.cat((features, labels), -1)
-        
+            -1)
         features = features.transpose(-1, 1).contiguous()
         for module in self.encoder[0]:
             pc_xyz_expand, features = module(pc_xyz_expand, features)
 
         return self.encoder[1](features.squeeze(-1))
+
+    # def encode(self, pc_xyz, grasps):
+    #     pc_xyz_expand = pc_xyz.unsqueeze(0).repeat(grasps.shape[0], 1, 1)
+    #     grasp_features = grasps
+    #     features = torch.cat(
+    #         (pc_xyz_expand, grasp_features),
+    #         1)
+            
+    #     # Create labels: 0 for point cloud points, 1 for grasp features
+    #     pc_labels = torch.zeros(pc_xyz_expand.shape[0], pc_xyz_expand.shape[1], 1, device=features.device)
+    #     grasp_labels = torch.ones(grasp_features.shape[0], grasp_features.shape[1], 1, device=features.device)
+        
+    #     labels = torch.cat((pc_labels, grasp_labels), 1)
+        
+    #     # Concatenate features and labels -> [25, 4102, 4]
+    #     features = torch.cat((features, labels), -1)
+        
+    #     features = features.transpose(-1, 1).contiguous()
+    #     for module in self.encoder[0]:
+    #         pc_xyz_expand, features = module(pc_xyz_expand, features)
+
+    #     return self.encoder[1](features.squeeze(-1))
 
     def bottleneck(self, z):
         return self.latent_space[0](z), self.latent_space[1](z)
