@@ -148,7 +148,7 @@ class GraspSamplerVAE(GraspSampler):
             latent_size, device)
 
         self.create_encoder(model_scale, pointnet_radius,
-                            pointnet_nclusters, 21)
+                            pointnet_nclusters, 4)
 
         # self.create_decoder(model_scale, pointnet_radius, pointnet_nclusters,
         #                     latent_size + 3 + 1)
@@ -173,40 +173,61 @@ class GraspSamplerVAE(GraspSampler):
         logvar = nn.Linear(input_size, latent_size)
         self.latent_space = nn.ModuleList([mu, logvar])
 
-    def encode(self, pc_xyz, grasps):
-        grasps = grasps.view(grasps.shape[0], -1)
-        pc_xyz_expand = pc_xyz.unsqueeze(0).repeat(grasps.shape[0], 1, 1)
-        grasp_features = grasps.unsqueeze(1).expand(-1, pc_xyz_expand.shape[1], -1)
-        features = torch.cat(
-            (pc_xyz_expand, grasp_features),
-            -1)
-        features = features.transpose(-1, 1).contiguous()
-        for module in self.encoder[0]:
-            pc_xyz_expand, features = module(pc_xyz_expand, features)
-
-        return self.encoder[1](features.squeeze(-1))
-
     # def encode(self, pc_xyz, grasps):
+    #     grasps = grasps.view(grasps.shape[0], -1)
     #     pc_xyz_expand = pc_xyz.unsqueeze(0).repeat(grasps.shape[0], 1, 1)
-    #     grasp_features = grasps
+    #     grasp_features = grasps.unsqueeze(1).expand(-1, pc_xyz_expand.shape[1], -1)
     #     features = torch.cat(
     #         (pc_xyz_expand, grasp_features),
-    #         1)
-            
-    #     # Create labels: 0 for point cloud points, 1 for grasp features
-    #     pc_labels = torch.zeros(pc_xyz_expand.shape[0], pc_xyz_expand.shape[1], 1, device=features.device)
-    #     grasp_labels = torch.ones(grasp_features.shape[0], grasp_features.shape[1], 1, device=features.device)
-        
-    #     labels = torch.cat((pc_labels, grasp_labels), 1)
-        
-    #     # Concatenate features and labels -> [25, 4102, 4]
-    #     features = torch.cat((features, labels), -1)
-        
+    #         -1)
     #     features = features.transpose(-1, 1).contiguous()
     #     for module in self.encoder[0]:
     #         pc_xyz_expand, features = module(pc_xyz_expand, features)
 
     #     return self.encoder[1](features.squeeze(-1))
+
+    # def encode(self, pc_xyz, grasps):
+    #     pc_xyz_expand = pc_xyz.unsqueeze(0).repeat(grasps.shape[0], 1, 1)
+    #     grasp_features = grasps
+    #     xyz = torch.cat(
+    #         (pc_xyz_expand, grasp_features),
+    #         1)
+            
+    #     # Create labels: 0 for point cloud points, 1 for grasp features
+    #     pc_labels = torch.zeros(pc_xyz_expand.shape[0], pc_xyz_expand.shape[1], 1, device=pc_xyz_expand.device)
+    #     grasp_labels = torch.ones(grasp_features.shape[0], grasp_features.shape[1], 1, device=grasp_features.device)
+        
+    #     labels = torch.cat((pc_labels, grasp_labels), 1)
+        
+    #     # Concatenate features and labels -> [25, 4102, 4]
+    #     features = torch.cat((xyz, labels), -1)
+        
+    #     features = features.transpose(-1, 1).contiguous()
+    #     for module in self.encoder[0]:
+    #         xyz, features = module(xyz, features)
+
+    #     return self.encoder[1](features.squeeze(-1))
+
+    def encode(self, pc_xyz, grasps):
+        grasp_features = torch.stack([grasp for grasp in grasps], dim=0)
+        xyz = torch.cat(
+            (pc_xyz, grasp_features),
+            1)
+            
+        # Create labels: 0 for point cloud points, 1 for grasp features
+        pc_labels = torch.zeros(pc_xyz.shape[0], pc_xyz.shape[1], 1, device=pc_xyz.device)
+        grasp_labels = torch.ones(grasp_features.shape[0], grasp_features.shape[1], 1, device=grasp_features.device)
+        
+        labels = torch.cat((pc_labels, grasp_labels), 1)
+        
+        # Concatenate features and labels -> [25, 4102, 4]
+        features = torch.cat((xyz, labels), -1)
+        
+        features = features.transpose(-1, 1).contiguous()
+        for module in self.encoder[0]:
+            xyz, features = module(xyz, features)
+
+        return self.encoder[1](features.squeeze(-1))
 
     def bottleneck(self, z):
         return self.latent_space[0](z), self.latent_space[1](z)
@@ -246,28 +267,113 @@ class GraspSamplerVAE(GraspSampler):
 
 
 def base_network(pointnet_radius, pointnet_nclusters, scale, in_features):
-    sa1_module = pointnet2.PointnetSAModule(
-        npoint=pointnet_nclusters,
-        radius=pointnet_radius,
-        nsample=64,
-        mlp=[in_features, 64 * scale, 64 * scale, 128 * scale])
+    # SA1: Multi-Scale Grouping
+    # 我们使用三个不同半径 [r, 2r, 4r]
+    # 输出通道数合计 64+128+128 = 320 (与之前的总宽度一致，但分成了不同尺度)
+    sa1_module = pointnet2.PointnetSAModuleMSG(
+        npoint=512,
+        radii=[pointnet_radius, pointnet_radius * 2, pointnet_radius * 4],
+        nsamples=[16, 32, 128],
+        mlps=[
+            [in_features, 32 * scale, 32 * scale, 64 * scale],
+            [in_features, 64 * scale, 64 * scale, 128 * scale],
+            [in_features, 64 * scale, 96 * scale, 128 * scale],
+        ],
+    )
+    
+    c1_out = 64 * scale + 128 * scale + 128 * scale # 320
 
-    sa2_module = pointnet2.PointnetSAModule(
-        npoint=int(pointnet_nclusters/4),
-        radius=pointnet_radius*2,
-        nsample=128,
-        mlp=[128 * scale, 128 * scale, 128 * scale, 256 * scale])
+    # SA2: Multi-Scale Grouping
+    # 为第二层定义更大的基础半径
+    r2 = pointnet_radius * 2
+    # 输出通道数合计 128+256+256 = 640
+    sa2_module = pointnet2.PointnetSAModuleMSG(
+        npoint=128,
+        radii=[r2, r2 * 2, r2 * 4],
+        nsamples=[32, 64, 128],
+        mlps=[
+            [c1_out, 64 * scale, 64 * scale, 128 * scale],
+            [c1_out, 128 * scale, 128 * scale, 256 * scale],
+            [c1_out, 128 * scale, 128 * scale, 256 * scale],
+        ],
+    )
+    
+    c2_out = 128 * scale + 256 * scale + 256 * scale # 640
 
+    # SA3: Global (Feature Aggregation)
+    # 这一层通常是对所有点做全局池化，不需要MSG
     sa3_module = pointnet2.PointnetSAModule(
-        mlp=[256 * scale, 256 * scale, 256 * scale, 512 * scale])
+        mlp=[c2_out, 512 * scale, 512 * scale, 1024 * scale])
 
     sa_modules = nn.ModuleList([sa1_module, sa2_module, sa3_module])
-    # fc_layer = nn.Sequential(nn.Linear(512 * scale, 1024 * scale),
-    #                          nn.BatchNorm1d(1024 * scale), nn.ReLU(True),
-    #                          nn.Linear(1024 * scale, 1024 * scale),
-    #                          nn.BatchNorm1d(1024 * scale), nn.ReLU(True))
-    fc_layer = nn.Sequential(nn.Linear(512 * scale, 4096 * scale),
-                             nn.LayerNorm(4096 * scale), nn.ReLU(True),
+    
+
+    fc_layer = nn.Sequential(nn.Linear(1024 * scale, 4096 * scale),
+                             nn.BatchNorm1d(4096 * scale), nn.GELU(),
                              nn.Linear(4096 * scale, 4096 * scale),
-                             nn.LayerNorm(4096 * scale), nn.ReLU(True))
+                             nn.BatchNorm1d(4096 * scale), nn.GELU())
     return nn.ModuleList([sa_modules, fc_layer])
+
+
+# def base_network(pointnet_radius, pointnet_nclusters, scale, in_features):
+#     sa1_module = pointnet2.PointnetSAModuleMSG(
+#         npoint=pointnet_nclusters,
+#         radii=[pointnet_radius, pointnet_radius * 2],
+#         nsamples=[16, 32],
+#         mlps=[
+#             [in_features, 32 * scale, 32 * scale, 64 * scale],
+#             [in_features, 64 * scale, 64 * scale, 128 * scale],
+#         ],
+#     )
+
+#     c1_out = 64 * scale + 128 * scale
+
+#     r2 = pointnet_radius * 2
+#     sa2_module = pointnet2.PointnetSAModuleMSG(
+#         npoint=128,
+#         radii=[r2, r2 * 2],
+#         nsamples=[32, 64],
+#         mlps=[
+#             [c1_out, 64 * scale, 64 * scale, 128 * scale],
+#             [c1_out, 128 * scale, 128 * scale, 256 * scale],
+#         ],
+#     )
+
+#     c2_out = 128 * scale + 256 * scale
+
+#     sa3_module = pointnet2.PointnetSAModule(
+#         mlp=[c2_out, 512 * scale, 512 * scale, 1024 * scale])
+
+#     sa_modules = nn.ModuleList([sa1_module, sa2_module, sa3_module])
+#     fc_layer = nn.Sequential(nn.Linear(1024 * scale, 4096 * scale),
+#                              nn.BatchNorm1d(4096 * scale), nn.GELU(),
+#                              nn.Linear(4096 * scale, 4096 * scale),
+#                              nn.BatchNorm1d(4096 * scale), nn.GELU())
+#     return nn.ModuleList([sa_modules, fc_layer])
+
+# def base_network(pointnet_radius, pointnet_nclusters, scale, in_features):
+#     sa1_module = pointnet2.PointnetSAModule(
+#         npoint=pointnet_nclusters,
+#         radius=pointnet_radius,
+#         nsample=64,
+#         mlp=[in_features, 64 * scale, 64 * scale, 128 * scale])
+
+#     sa2_module = pointnet2.PointnetSAModule(
+#         npoint=int(pointnet_nclusters/4),
+#         radius=pointnet_radius*2,
+#         nsample=128,
+#         mlp=[128 * scale, 128 * scale, 128 * scale, 256 * scale])
+
+#     sa3_module = pointnet2.PointnetSAModule(
+#         mlp=[256 * scale, 256 * scale, 256 * scale, 512 * scale])
+
+#     sa_modules = nn.ModuleList([sa1_module, sa2_module, sa3_module])
+#     # fc_layer = nn.Sequential(nn.Linear(512 * scale, 1024 * scale),
+#     #                          nn.BatchNorm1d(1024 * scale), nn.ReLU(True),
+#     #                          nn.Linear(1024 * scale, 1024 * scale),
+#     #                          nn.BatchNorm1d(1024 * scale), nn.ReLU(True))
+#     fc_layer = nn.Sequential(nn.Linear(512 * scale, 4096 * scale),
+#                              nn.LayerNorm(4096 * scale), nn.ReLU(True),
+#                              nn.Linear(4096 * scale, 4096 * scale),
+#                              nn.LayerNorm(4096 * scale), nn.ReLU(True))
+#     return nn.ModuleList([sa_modules, fc_layer])

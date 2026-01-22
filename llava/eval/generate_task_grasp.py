@@ -13,8 +13,6 @@ from llava.constants import IMAGE_TOKEN_INDEX
 # from llava.train.GraspcotDataset import GraspcotDataset_Test
 # from llava.train.Graspcot_Task_Dataset import GraspcotDataset_Test
 from llava.train.Graspcot_Grasp_Dataset import GraspcotDataset_Test
-
-
 from llava.train.train import DataCollatorForSupervisedDataset
 
 from PIL import Image
@@ -32,6 +30,10 @@ from tqdm import tqdm
 import random
 from llava import conversation as conversation_lib
 import time
+import gc
+from collections import defaultdict
+from sklearn.metrics import average_precision_score
+
 
 
 # def precess_data(tokenizer, instance):
@@ -153,6 +155,72 @@ def check_grasp(gt, pred):
     print("fail indices:", fail)
     return len(fail)
 
+def safe_ap(y_true, y_score):
+    """AP 需要同时有正/负样本，否则该 instance 的 AP 没意义，返回 None。"""
+    y_true = np.asarray(y_true).astype(int)
+    y_score = np.asarray(y_score).astype(float)
+    if y_true.size == 0:
+        return None
+    if (y_true == 1).sum() == 0 or (y_true == 0).sum() == 0:
+        return None
+    return float(average_precision_score(y_true, y_score))
+
+def get_instance_key(sample: dict):
+    """
+    从 dataset sample 里提取 instance 标识。
+    你可以把最匹配你数据集的 key 放到最前面。
+    """
+    candidate_keys = [
+        "pc_path"
+    ]
+    for k in candidate_keys:
+        if k in sample:
+            v = sample[k]
+            if torch.is_tensor(v):
+                if v.numel() == 1:
+                    v = v.item()
+                else:
+                    v = v.detach().cpu().numpy().tolist()
+            return str(v)
+
+    # 兜底：如果 sample 里有路径字段，就取 basename
+    path_keys = ["image_path", "rgb_path", "depth_path", "path", "file_path", "data_path"]
+    for k in path_keys:
+        if k in sample:
+            return os.path.basename(str(sample[k]))
+
+    # 最后兜底：用 index（如果你传进来）
+    if "index" in sample:
+        return f"sample_{sample['index']}"
+    return "unknown_instance"
+
+def compute_instance_mAP(inst2labels, inst2scores, verbose=False):
+    aps = []
+    for inst in inst2scores.keys():
+        ap = safe_ap(inst2labels[inst], inst2scores[inst])
+        if ap is None:
+            continue
+        aps.append(ap)
+        if verbose:
+            print(f"[AP] {inst}: {ap:.4f}  (N={len(inst2labels[inst])})")
+    mAP = float(np.mean(aps)) if len(aps) > 0 else float("nan")
+    return mAP, len(aps)
+
+def update_global_buffers(global_scores, global_labels, scores, labels):
+    """把一个 batch/一个 sample 的 scores/labels 加到全局列表里。"""
+    global_scores.extend(np.asarray(scores, dtype=float).reshape(-1).tolist())
+    global_labels.extend(np.asarray(labels, dtype=int).reshape(-1).tolist())
+
+def compute_overall_ap(global_scores, global_labels):
+    """把所有 instance 混在一起，算一次 AP（micro / overall AP）。"""
+    y_score = np.asarray(global_scores, dtype=float)
+    y_true  = np.asarray(global_labels, dtype=int)
+
+    # AP 至少需要同时存在正/负样本
+    if (y_true == 1).sum() == 0 or (y_true == 0).sum() == 0:
+        return float("nan")
+    return float(average_precision_score(y_true, y_score))
+
 def eval_model(args):
     # Model
     disable_torch_init()
@@ -221,6 +289,10 @@ def eval_model(args):
 
     model.config.use_dialogue = True
 
+
+    global_scores = []
+    global_labels = []
+
     num_val = 38
     len_data = len(test_dataset)
     data_list = list(range(len_data))
@@ -231,13 +303,26 @@ def eval_model(args):
     avg_time = 0.0
     num_fail = 0
     preds_list = []
-    for i in tqdm(selected_data):
 
+    inst2scores = defaultdict(list)  # instance -> [pred_score...]
+    inst2labels = defaultdict(list)  # instance -> [0/1...]
+
+    for i in tqdm(selected_data):
         instance = test_dataset.__getitem__(i)
+        # instance_key = get_instance_key(instance)
         gs_labels = instance["gs_labels"]
         correct_answers = instance.pop("correct_answer")
         questions = instance.pop("questions")
         inputs = precess_data(tokenizer, instance)
+        inputs['gs'] = inputs['gs'].reshape(25, 6, 3)
+        inputs['pcs'] = inputs['pcs'].repeat(inputs['gs'].shape[0], 1, 1)
+        inputs['input_ids'] = inputs['input_ids'].repeat(inputs['gs'].shape[0], 1)
+        inputs['labels'] = inputs['labels'].repeat(inputs['gs'].shape[0], 1)
+        inputs['attention_mask'] = inputs['attention_mask'].repeat(inputs['gs'].shape[0], 1)
+        inputs['images'] = inputs['images'].repeat(inputs['gs'].shape[0], 1, 1, 1, 1)
+        inputs['depths'] = inputs['depths'].repeat(inputs['gs'].shape[0], 1, 1, 1)
+        inputs['poses'] = inputs['poses'].repeat(inputs['gs'].shape[0], 1, 1, 1)
+        inputs['intrinsics'] = inputs['intrinsics'].repeat(inputs['gs'].shape[0], 1, 1, 1)
 
         grasp_out = False
         start_time = time.time()
@@ -246,85 +331,37 @@ def eval_model(args):
             preds = grasp_outs['all_cls_scores'][0]
             preds = preds.squeeze(0).squeeze(-1)
             gs_labels = gs_labels.to(preds.device).float()
+            y_score = preds.detach().float().view(-1).cpu().numpy()
+            y_true  = gs_labels.detach().float().view(-1).cpu().numpy()
+
+            update_global_buffers(global_scores, global_labels, y_score, y_true)
+
             loss_fct = torch.nn.BCELoss()
-            loss = loss_fct(preds, gs_labels)
+            loss = loss_fct(preds, gs_labels.unsqueeze(1))
+            # loss = loss_fct(preds, gs_labels)
             print("Grasp Prediction Loss:", loss.item())
             num_fail += check_grasp(gs_labels, preds)
+            # y_score = preds.detach().float().view(-1).cpu().numpy().tolist()
+            # y_true  = gs_labels.detach().float().view(-1).cpu().numpy().tolist()
+            # inst2scores[instance_key].extend(y_score)
+            # inst2labels[instance_key].extend(y_true)
 
 
         avg_time += time.time() - start_time
+
+        del inputs, grasp_outs, outputs, preds, gs_labels, loss
+        torch.cuda.empty_cache()
+        gc.collect()
 
     # np.save("preds_list.npy", preds_list)
 
     print(1-num_fail/950.0)
     print(f"Average Inference Time per Sample: {avg_time / num_val:.2f} seconds")
-            # print("Generated text:", text)
-            # print("correct_answers", correct_answers[3])
+    # instance_mAP, n_valid = compute_instance_mAP(inst2labels, inst2scores, verbose=False)
+    # print(f"Instance mAP (valid instances={n_valid}): {instance_mAP:.4f}")
+    overall_ap = compute_overall_ap(global_scores, global_labels)
+    print(f"Overall AP (micro, all instances merged): {overall_ap:.4f}")
 
-            # loss_fct = torch.nn.BCELoss()
-            # loss = loss_fct(preds, gs_labels)
-            # print("Grasp Prediction Loss:", loss.item())
-            # print("correct_answers", correct_answers)
-
-
-            # grasps = model.predict_grasps(grasp_outs)
-            # pred_grasps, scores, labels = grasps[0]
-
-
-        # with torch.inference_mode():
-        #     generated = model.generate(
-        #         **inputs,
-        #         max_new_tokens=args.max_new_tokens,
-        #         temperature=args.temperature,
-        #         top_p=args.top_p,
-        #         num_beams=args.num_beams,
-        #     )
-        #     new_tokens = generated[:, inputs["input_ids"].shape[1]:]
-        #     text = tokenizer.batch_decode(new_tokens, skip_special_tokens=True)[0]
-        #     print("Generated answer:", text)
-            # outputs = model(**inputs)
-            # token_ids = torch.argmax(outputs.logits, dim=-1)
-            # text = tokenizer.batch_decode(token_ids, skip_special_tokens=True)[0]
-            # print("Generated text:", text)
-            
-            
-            # generation_inputs = {
-            #     "input_ids": inputs["input_ids"],
-            #     "images": inputs.get("images"),
-            #     "depths": inputs.get("depths"),
-            #     "poses": inputs.get("poses"),
-            #     "intrinsics": inputs.get("intrinsics"),
-            # }
-            # # 去掉 labels/attention_mask，不需要
-            # generation_inputs = {k: v for k, v in generation_inputs.items() if v is not None}
-
-            # model.config.pad_token_id = tokenizer.pad_token_id
-            # model.config.eos_token_id = tokenizer.eos_token_id
-
-            # with torch.inference_mode():
-            #     generated = model.generate(
-            #         **inputs,
-            #         max_new_tokens=args.max_new_tokens,
-            #         temperature=args.temperature,
-            #         top_p=args.top_p,
-            #         num_beams=args.num_beams,
-            #     )
-
-            # new_tokens = generated[:, inputs["input_ids"].shape[1]:]
-            # text = tokenizer.batch_decode(new_tokens, skip_special_tokens=True)[0]
-            # print("Generated answer:", text)
-
-            # grasp_outs, outputs = model(**inputs)
-
-            # grasps = model.predict_grasps(grasp_outs)
-            # pred_grasps, scores, labels = grasps[0]
-
-        # grasp_dict[scene]=dict(gen_grasps=pred_grasps, gt_grasps=gt_grasps, scores=scores, pc_path=pc_path, scene=scene)
-
-    # with open(os.path.join(args.output_dir, "scenegrasp_gen_data.pkl"), 'wb') as f:
-    #     pickle.dump(grasp_dict, f)
-    
-    
 
 
 if __name__ == "__main__":

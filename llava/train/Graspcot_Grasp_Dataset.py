@@ -763,6 +763,11 @@ class GraspcotDataset_Train(Dataset):
 
         grasps = info['gs']
         gs_labels = torch.tensor(new_gs_labels, dtype=torch.int64).unsqueeze(1)
+        N = gs_labels.shape[0]
+        idx = torch.randint(0, N, (1,)).item()
+        gs_labels = gs_labels[idx:idx+1, :]
+        grasps = [grasps[0][idx:idx+1, :, :].reshape(6,3)]
+
         # print(gs_labels.shape, len(grasps))
         # gs_labels = info['gs_labels']
 
@@ -996,6 +1001,11 @@ class GraspcotDataset_Test(Dataset):
                 new_gs_labels.append(0)
 
         gs_labels = torch.tensor(new_gs_labels, dtype=torch.int64).unsqueeze(1)
+        # N = gs_labels.shape[0]
+        # idx = torch.randint(0, N, (1,)).item()
+        # gs_labels = gs_labels[idx:idx+1, :]
+        # grasps = [grasps[0][idx:idx+1, :, :].reshape(6,3)]
+
 
         pc = np.load(f"{self.dataset_path}/scans/{scene}/down_pc_4096.npy")
         pc = torch.from_numpy(pc).to(torch.float32)

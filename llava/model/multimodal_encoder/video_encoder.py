@@ -5,7 +5,7 @@ from .video_processor import RGBDVideoProcessor
 from .spatial_aware_module import SpatialAwareModule
 from .unproject import backprojector_dataloader, voxelize, voxelize_points, interpolate_feat_up, interpolate_xyz_down
 from pytorch3d.ops import sample_farthest_points
-from torch_scatter import scatter_mean
+from torch_scatter import scatter_mean, scatter_sum
 from .position_encodings import PositionEmbeddingLearnedMLP
 import open3d as o3d
 import numpy as np
@@ -83,6 +83,14 @@ class RGBDVideoTower(nn.Module):
             dropout=0.1, 
             activation='gelu', 
             batch_first=True
+        )
+        self.geo_embed_layer = nn.Sequential(
+            nn.Linear(3+1, 256),       
+            nn.GELU(),            
+            nn.Linear(256, 512),    
+            nn.GELU(),
+            nn.Linear(512, 1024), 
+            nn.LayerNorm(1024)
         )
         self.voxel_self_attn = self.voxel_self_attn.to(dtype=torch.bfloat16)
         self.video_tower.initialize()
@@ -172,11 +180,26 @@ class RGBDVideoTower(nn.Module):
             for b in range(len(video_features_up)):
                 m = valid_flat[b]  # (N,)
                 xyz_b  = xyz_flat[b][m]      # (Nv, 3)
+
                 feat_b = feat_flat[b][m]     # (Nv, C)
                 # 只对有效点 voxelize
                 p2v_b = voxelize_points(xyz_b.unsqueeze(0), self.voxel_size)[0]  # (Nv,)
+                v_xyz_b = scatter_mean(xyz_b, p2v_b, dim=0)
+                
+                # 计算点数密度 (Density)
+                # 创建一个全1的tensor，scatter_sum 后就是每个体素里的点数
+                ones_b = torch.ones(p2v_b.shape[0], 1, device=p2v_b.device, dtype=feat_b.dtype)
+                v_count_b = scatter_sum(ones_b, p2v_b, dim=0)  # (num_vox, 1)
+                v_density_b = torch.log(v_count_b)
+
+                geo_embed = self.geo_embed_layer(torch.cat((v_xyz_b, v_density_b), dim=-1))
+                
+                # 打印最大值，最小值和平均值，辅助判断分布是否正常
+                # print(f"Max Density (Log scale): {v_density_b.max().item():.4f}")
+                # print(f"Density Stats -> Min: {v_density_b.min().item():.4f}, Mean: {v_density_b.mean().item():.4f}")
                 # voxel 聚合
                 v_feat_b = scatter_mean(feat_b, p2v_b, dim=0)  # (num_vox, C)
+                v_feat_b = v_feat_b + geo_embed
                 batch_features_list.append(v_feat_b)
                 batch_counts.append(v_feat_b.shape[0])
 

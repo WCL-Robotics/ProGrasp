@@ -993,9 +993,9 @@ def visualize_pc_data():
     task_obj = '/media/robot/data/WCL/taskgrasp/taskgrasp_image/scans'
     folders = [f for f in os.listdir(task_obj) if os.path.isdir(os.path.join(task_obj, f))]
     folders_sorted = sorted(folders, key=lambda s: int(s[:3]))
-    folders_sorted_selected = folders_sorted[:2]
+    folders_sorted_selected = folders_sorted[6:7]
 
-    for file in folders_sorted:
+    for file in folders_sorted_selected:
         grasp_path = f"/media/robot/data/WCL/taskgrasp/taskgrasp_image/scans/{file}"
         grasps = merge_grasp(grasp_path)
 
@@ -1060,7 +1060,7 @@ def visualize_pc_data():
         grasp_pc = np.matmul(grasps, grasp_pc.T).transpose(0, 2, 1)
         grasp_pc = grasp_pc[:, :, :3]
 
-        for i in range(0, len(grasps)):
+        for i in range(1, len(grasps)):
             grasp_mesh = get_gripper_control_points_o3d(grasps[i])
             all_grasp_meshes.extend(grasp_mesh)
             break
@@ -1094,7 +1094,7 @@ def visualize_pc_data():
             origin=[0, 0, 0]  # 原点位置
         )
 
-        o3d.visualization.draw_geometries([point_cloud, coordinate_frame], 
+        o3d.visualization.draw_geometries([point_cloud] + all_grasp_meshes, 
                                         window_name="Point Cloud with RGB Colors and Origin",
                                         width=1024, 
                                         height=768,
@@ -1106,5 +1106,83 @@ def visualize_pc_data():
         
 
 
+def show_mesh_transparent(mesh: o3d.geometry.TriangleMesh, alpha=0.8):
+    import open3d.visualization.gui as gui
+    import open3d.visualization.rendering as rendering
+
+    gui.Application.instance.initialize()
+    w = gui.Application.instance.create_window("Voxels (20% Transparent)", 1280, 720)
+
+    scene_widget = gui.SceneWidget()
+    scene_widget.scene = rendering.Open3DScene(w.renderer)
+    w.add_child(scene_widget)
+
+    mat = rendering.MaterialRecord()
+    mat.shader = "defaultLitTransparency"
+    mat.base_color = (0.7, 0.7, 0.7, float(alpha))  # RGBA, alpha=0.8 -> 20%透明
+    mat.base_roughness = 0.9
+    mat.base_reflectance = 0.2
+
+    scene_widget.scene.add_geometry("voxels", mesh, mat)
+
+    # 白色背景（尽量兼容）
+    try:
+        if hasattr(scene_widget.scene, "set_background"):
+            scene_widget.scene.set_background(np.array([1.0, 1.0, 1.0, 1.0], dtype=np.float32))
+    except Exception:
+        pass
+
+    # 太阳光（兼容你之前的版本签名）
+    scene = scene_widget.scene.scene
+    direction = np.array([[-1.0], [-1.0], [-2.0]], dtype=np.float32)
+    color     = np.array([[ 1.0], [ 1.0], [ 1.0]], dtype=np.float32)
+    scene.set_sun_light(direction, color, 80000.0)
+    scene.enable_sun_light(True)
+
+    bounds = scene_widget.scene.bounding_box
+    scene_widget.setup_camera(60.0, bounds, bounds.get_center())
+
+    gui.Application.instance.run()
+
+
+def draw_voxels_with_gap(pcd: o3d.geometry.PointCloud, voxel_size=0.0125, shrink=0.85, alpha=0.8):
+    """
+    shrink < 1.0 会产生缝隙；越小缝越大。建议 0.7~0.95
+    alpha=0.8 -> 20%透明
+    """
+    vg = o3d.geometry.VoxelGrid.create_from_point_cloud(pcd, voxel_size=voxel_size)
+
+    s = voxel_size * shrink
+    mesh_all = o3d.geometry.TriangleMesh()
+
+    for v in vg.get_voxels():
+        center = vg.get_voxel_center_coordinate(v.grid_index)
+
+        box = o3d.geometry.TriangleMesh.create_box(width=s, height=s, depth=s)
+        box.translate(center - np.array([s, s, s]) / 2.0)
+        box.paint_uniform_color([0.7, 0.7, 0.7])
+
+        mesh_all += box
+
+    mesh_all.compute_vertex_normals()
+
+    # 用新渲染器显示透明度（替代 draw_geometries）
+    show_mesh_transparent(mesh_all, alpha=alpha)
+
+
+def voxel_visualize_with_gap(npy_path, voxel_size=0.0125, shrink=0.85, alpha=0.8):
+    pcd_np = np.load(npy_path)
+    xyz = pcd_np[:, :3].astype(np.float64)
+
+    pcd = o3d.geometry.PointCloud()
+    pcd.points = o3d.utility.Vector3dVector(xyz)
+
+    draw_voxels_with_gap(pcd, voxel_size=voxel_size, shrink=shrink, alpha=alpha)
+
 if __name__ == "__main__":
-    visualize_pc_data()
+    # visualize_pc_data()
+    voxel_visualize_with_gap(
+        "/media/robot/data/WCL/taskgrasp/taskgrasp_image/scans/008_masher/fused_pc_clean.npy",
+        voxel_size=0.005,
+        shrink=0.85
+    )

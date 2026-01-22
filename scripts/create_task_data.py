@@ -30,6 +30,7 @@ from llava.train.llm import read_grasp_part
 
 from scipy.spatial.transform import Rotation as R
 import imageio
+from collections import defaultdict
 
 
 
@@ -182,6 +183,8 @@ def read_data(pth):
                 file_name.append(line)
     return file_name
 
+
+
 def _fill_grasp_trainval_infos(version="train", pruning=False):
     """Generate the train/val infos from the raw data.
 
@@ -211,7 +214,7 @@ def _fill_grasp_trainval_infos(version="train", pruning=False):
         train_data = read_data("/media/robot/data/WCL/taskgrasp/taskgrasp_image/splits_final/i/0/train_i.txt")
         val_data  = read_data("/media/robot/data/WCL/taskgrasp/taskgrasp_image/splits_final/i/0/val_i.txt")
         train_data = list(dict.fromkeys(train_data + val_data))
-        part_filenames = train_data
+
         # part_filenames = filenames[id*seperate_num:min((id+1)*seperate_num, int(len(filenames)*4/5))]   # 80% scenes for training
     else:
         test_data = read_data("/media/robot/data/WCL/taskgrasp/taskgrasp_image/splits_final/i/0/test_i.txt")

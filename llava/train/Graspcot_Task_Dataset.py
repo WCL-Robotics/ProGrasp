@@ -657,14 +657,18 @@ class GraspcotDataset_Train(Dataset):
 
 
     def get_data_info(self, index):
-        info = self.aligned_infos['infos'][index]
+        scene_idx = index // 4
+        prompt_idx = index % 4
+        info = self.aligned_infos['infos'][scene_idx]
+        # info = self.aligned_infos['infos'][index]
         
         scene = info['scene_token']
         obj = scene.split('_', 1)[1]
         try:
             with open(f"/media/robot/data/WCL/taskgrasp/taskgrasp_image/scans/{scene}/prompt.pkl", "rb") as f:
                 prompts = pickle.load(f)
-                prompt = random.choice(prompts)
+                # prompt = random.choice(prompts)
+                prompt = prompts[prompt_idx]
 
         except Exception as e:
             print(f"Error loading prompt for scene {scene}: {e}")
@@ -841,7 +845,7 @@ class GraspcotDataset_Train(Dataset):
         return data_dict
 
     def __len__(self):
-        return len(self.aligned_infos['infos'])
+        return len(self.aligned_infos['infos']) * 4
     
 
 class GraspcotDataset_Test(Dataset):
@@ -983,7 +987,7 @@ class GraspcotDataset_Test(Dataset):
         conversations = []
         mask_conversations = []
         
-        request_str_1 = f"13 motion primitives are defined as follows: {' '.join(motion_attributes)}. The task is: {prompt[0]}. Which type of motion primitive does the task belong to?"
+        request_str_1 = f"13 motion primitives are defined as follows: {' '.join(motion_attributes)} The task is: {prompt[0]} Which type of motion primitive does the task belong to?"
         response_str = f"{prompt[1]}"
         mask_response_str = mask_text_llava_compatible(response_str, self.tokenizer)
         request = {
@@ -1002,7 +1006,8 @@ class GraspcotDataset_Test(Dataset):
         parts = read_object_part(f"{self.dataset_path}/scans/{scene}/object_part.txt")
         part_attr = read_part_attributes(f"{self.dataset_path}/scans/{scene}/object_property.txt")
         request_str_2 = "<image>" + f"The object in image is {obj}, which consists of the following parts: {parts}. The attributes of each part are: {part_attr}. Combining the task semantics and the motion primitives it belongs to, infer what attributes the component needs."
-        response_str = f"{prompt[2]}"
+        response_str = "<unsupervised>" * 30
+        # response_str = f"{prompt[2]}"
         mask_response_str = mask_text_llava_compatible(response_str, self.tokenizer)
         request = {
             "from": "human",

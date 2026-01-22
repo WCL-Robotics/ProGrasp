@@ -145,14 +145,15 @@ class SecondVoxelTower(nn.Module):
     def __init__(self, args):
         super().__init__()
         # point_cloud_range = [-0.5, -0.5, 0, 0.5, 0.5, 1]
-        point_cloud_range = [-0.25, -0.25, 0, 0.25, 0.25, 0.5]
+        self.point_cloud_range = [-0.25, -0.25, 0, 0.25, 0.25, 0.5]
         self.voxel_type = 'hard'
         voxel_layer=dict(
             max_num_points=64,
-            point_cloud_range=point_cloud_range,
+            point_cloud_range=self.point_cloud_range,
             voxel_size = [0.00625, 0.00625, 0.00625],
             max_voxels=(16000, 40000))
-
+        
+        
         voxel_encoder=dict(type='HardSimpleVFE')
         
         middle_encoder=dict(
@@ -166,7 +167,8 @@ class SecondVoxelTower(nn.Module):
         self.voxel_layer = VoxelizationByGridShape(**voxel_layer)
         self.voxel_encoder = MODELS.build(voxel_encoder)
         self.middle_encoder = MODELS.build(middle_encoder)
-        print("source file:", inspect.getsourcefile(type(self.middle_encoder)))
+        self.middle_encoder.return_out_tokens = True
+        # print("source file:", inspect.getsourcefile(type(self.middle_encoder)))
 
         # print(f"\n[SecondVoxelTower] Initialized parameters:")
         # for name, param in self.named_parameters():
@@ -200,6 +202,46 @@ class SecondVoxelTower(nn.Module):
                 f"q{int(q_low*100)}={q1.tolist()} q{int(q_high*100)}={q2.tolist()} qsize={qsize.tolist()}"
             )
 
+    def indices_to_centers_approx(self, inds, out_shape_zyx, device):
+        # inds: (N,4) [b,z,y,x]
+        xmin, ymin, zmin = self.point_cloud_range[:3]
+        # xmax, ymax, zmax = self.point_cloud_range[3:]
+        oz, oy, ox = [int(x) for x in out_shape_zyx]
+        
+        # Retrieve input sparse shape from the encoder
+        # This assumes self.middle_encoder has a sparse_shape attribute (Standard in mmdet3d SparseEncoder)
+        sz, sy, sx = self.middle_encoder.sparse_shape
+        
+        # Calculate stride based on X/Y which are usually padded to maintain aspect ratio logic (or at least valid Stride)
+        # Z might be cropped due to padding=0, so we shouldn't use sz/oz for stride calculation.
+        stride_x = sx / ox
+        stride_y = sy / oy
+        # stride_z = sz / oz  <-- This is WRONG when cropping happens
+        
+        # Assume isotropic stride or use X stride for Z
+        stride_z = stride_x 
+
+        # Calculate effective voxel size based on stride
+        vx_eff = self.voxel_layer.voxel_size[0] * stride_x
+        vy_eff = self.voxel_layer.voxel_size[1] * stride_y
+        vz_eff = self.voxel_layer.voxel_size[2] * stride_z
+
+        # Note: If there is padding=0 in Z layers, there might be a constant offset shift in Z.
+        # But fixing the scale (eff) is the most important step. 
+        # The previous version stretched 0.35m to 0.5m (0.071 vs 0.05).
+        
+        zyx = inds[:, 1:4].to(torch.float32)  # (N,3) z,y,x
+
+        x = (zyx[:, 2] + 0.5) * vx_eff + xmin
+        y = (zyx[:, 1] + 0.5) * vy_eff + ymin
+        z = (zyx[:, 0] + 0.5) * vz_eff + zmin
+        
+        # Optional: Add offset correction for Z if needed (e.g. + 1.0 * vz_eff)
+        # z = z + vz_eff * 1.0 
+        # z = (zyx[:, 0] + 0.5 + 1.0) * vz_eff + zmin
+
+        return torch.stack([x, y, z], dim=-1).to(device)
+
     # @torch.no_grad()
     def forward(self, points):
         with torch.cuda.amp.autocast(enabled=False):
@@ -210,31 +252,42 @@ class SecondVoxelTower(nn.Module):
 
             voxel_dict = self.voxelize(points_float32)
 
-
-
             voxel_features = self.voxel_encoder(voxel_dict['voxels'],
                                                 voxel_dict['num_points'],
                                                 voxel_dict['coors'])
             batch_size = voxel_dict['coors'][-1, 0].item() + 1
 
-            spatial_features = self.middle_encoder(voxel_features.to(torch.float32), voxel_dict['coors'].to(torch.int32),
+            spatial_features, feat, inds, out_shape_zyx = self.middle_encoder(voxel_features.to(torch.float32), voxel_dict['coors'].to(torch.int32),
                                 batch_size)
+            
+            # 计算每个 token 的中心点（世界坐标系下的 xyz）
+            centers = self.indices_to_centers_approx(
+                inds, out_shape_zyx,
+                device=feat.device
+            )
+            
+            # B, C, D, H, W = spatial_features.shape
+            # spatial_features = spatial_features.view(B, C, D * H* W)
+            # new_spatial_features, batch_offset = [], []
+            # for i in range(B):
+            #     valid_inds = spatial_features[i].abs().sum(0) > 0
+            #     valid_spatial_features = spatial_features[i][:, valid_inds]
+            #     new_spatial_features.append(valid_spatial_features.permute(1,0).to(torch.bfloat16))
+            #     batch_offset.append(valid_spatial_features.shape[-1]+1)
+            # return new_spatial_features, batch_offset
 
             
-            B, C, D, H, W = spatial_features.shape
-            spatial_features = spatial_features.view(B, C, D * H* W)
-            # B, C, H, W = spatial_features.shape
-            # spatial_features = spatial_features.view(B, C, H* W)
-            new_spatial_features, batch_offset = [], []
-            for i in range(B):
-                valid_inds = spatial_features[i].abs().sum(0) > 0
-                # print(f"[B{i}] valid tokens:", int(valid_inds.sum().item()))
-                valid_spatial_features = spatial_features[i][:, valid_inds]
-                new_spatial_features.append(valid_spatial_features.permute(1,0).to(torch.bfloat16))
-                batch_offset.append(valid_spatial_features.shape[-1]+1)
+            new_spatial_features, new_spatial_centers, batch_offset = [], [], []
+            for b in range(batch_size):
+                m = (inds[:, 0] == b)                 # 选出这个 batch 的 token
+                fb = feat[m].to(torch.bfloat16)       # (Nb,4096)
+                cb = centers[m]                       # (Nb,3)
 
-            return new_spatial_features, batch_offset
+                new_spatial_features.append(fb)
+                new_spatial_centers.append(cb)
+                batch_offset.append(fb.shape[0] + 1)
 
+            return new_spatial_features, new_spatial_centers, batch_offset
 
 
     # @torch.no_grad()

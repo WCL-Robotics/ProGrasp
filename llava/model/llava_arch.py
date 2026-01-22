@@ -258,8 +258,8 @@ class LlavaMetaForCausalLM(ABC):
         # return video_features, batch_offset
 
     def encode_points(self, pcs):
-        voxel_features, batch_offset = self.get_model().get_voxel_tower()(pcs)
-        return voxel_features, batch_offset
+        voxel_features, voxel_centers, batch_offset = self.get_model().get_voxel_tower()(pcs)
+        return voxel_features, voxel_centers, batch_offset
 
     def prepare_inputs_labels_for_multimodal(
         self, input_ids, grasp, position_ids, attention_mask, past_key_values, labels,
@@ -358,11 +358,17 @@ class LlavaMetaForCausalLM(ABC):
         # self.encode_grasp_rgbd(images, depths, poses, intrinsics, lengths=lengths, grasps=grasp)
         
         # if voxel_tower is not None and pcs is not None:
-        #     voxel_features, voxel_batch_offset = self.encode_points(pcs)
-        for index in range(len(grasp)):
-            grasp_feature = grasp_tower(image_features[index], pcs[index], grasp[index])
-            grasp_feature = grasp_feature.to(dtype=self.dtype)
-            grasp_features.append(grasp_feature)
+        #     voxel_features, voxel_centers, voxel_batch_offset = self.encode_points(pcs)
+
+        # for index in range(len(grasp)):
+        #     grasp_feature = grasp_tower(image_features[index], pcs[index], grasp[index])
+        #     # grasp_feature = grasp_tower(image_features[index], voxel_features[index], voxel_centers[index], grasp[index])
+        #     grasp_feature = grasp_feature.to(dtype=self.dtype)
+        #     grasp_features.append(grasp_feature)
+        
+        # grasp_feature = grasp_tower(image_features, pcs, grasp)
+        # for index in range(len(grasp_feature)):
+        #     grasp_features.append(grasp_feature[index].to(dtype=self.dtype))
 
 
         if pure_imgs is not None:

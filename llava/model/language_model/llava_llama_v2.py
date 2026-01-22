@@ -331,7 +331,7 @@ class LlavaLlamaForCausalLM_v2(LlamaForCausalLM_v2, LlavaMetaForCausalLM):
             shift_labels = shift_labels.to(shift_logits.device)
             loss = loss_fct(shift_logits, shift_labels)
 
-        loss *= 0.0
+        # loss *= 0.0
         
         if not return_dict:
             output = (logits,) + outputs[1:]

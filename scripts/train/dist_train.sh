@@ -38,7 +38,7 @@
 python -u llava/train/train_mem.py \
     --model_name_or_path ./pretrained_llms/llava-3d-7b \
     --lora_model_path /home/robot/WCL/GraspCoT/checkpoints/llava-graspcot-lora/ \
-    --lora_enable False \
+    --lora_enable True \
     --lora_alpha 16 \
     --lora_r 16 \
     --lora_dropout 0.05 \
@@ -52,14 +52,14 @@ python -u llava/train/train_mem.py \
     --grasp_tower GraspNet \
     --num_sample_tokens 1152 \
     --mm_projector_type mlp2x_gelu \
-    --tune_mm_mlp_adapter True \
+    --tune_mm_mlp_adapter False \
     --mm_vision_select_layer -2 \
     --mm_use_im_start_end False \
     --mm_use_im_patch_token False \
     --bf16 True \
     --output_dir ./checkpoints/llava-graspcot-lora\
-    --num_train_epochs 35 \
-    --per_device_train_batch_size 8 \
+    --num_train_epochs 100 \
+    --per_device_train_batch_size 16 \
     --per_device_eval_batch_size 4 \
     --gradient_accumulation_steps 2 \
     --evaluation_strategy no \
