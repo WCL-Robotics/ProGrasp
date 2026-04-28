@@ -100,7 +100,7 @@ def read_grasp_part(pth):
 def get_object_property_openai(pth, obj, part):
     openai_client = OpenAI(
         base_url="https://api.zhizengzeng.com/v1",
-        api_key="sk-zk2f7b0762a500c2b32bd4c24657b238d29693cf94767c23"
+        api_key=os.getenv("ZHIZENGZENG_API_KEY")
     )
     pth = Path(pth)
     img = encode_image_to_base64(pth / "0_color.png")
@@ -153,7 +153,7 @@ def get_object_property_openai(pth, obj, part):
 def get_grasp_motion_openai(pth, obj, part, part_attr, description, grasp_part):
     openai_client = OpenAI(
         base_url="https://api.zhizengzeng.com/v1",
-        api_key="sk-zk2f7b0762a500c2b32bd4c24657b238d29693cf94767c23"
+        api_key=os.getenv("ZHIZENGZENG_API_KEY")
     )
     pth = Path(pth)
     parts_list = [p.strip() for p in part.split(',')]
@@ -234,7 +234,7 @@ def get_grasp_motion_openai(pth, obj, part, part_attr, description, grasp_part):
 def get_grasp_part_openai(pth, obj, part):
     openai_client = OpenAI(
         base_url="https://api.zhizengzeng.com/v1",
-        api_key="sk-zk2f7b0762a500c2b32bd4c24657b238d29693cf94767c23"
+        api_key=os.getenv("ZHIZENGZENG_API_KEY")
     )
     pth = Path(pth)
     out = []
@@ -303,7 +303,7 @@ def get_grasp_part_openai(pth, obj, part):
 def get_obj_irrelevant_task_infer(pth, obj, part_attr, ins):
     openai_client = OpenAI(
         base_url="https://api.zhizengzeng.com/v1",
-        api_key="sk-zk2f7b0762a500c2b32bd4c24657b238d29693cf94767c23"
+        api_key=os.getenv("ZHIZENGZENG_API_KEY")
     )
     pth = Path(pth)
     prompt_text = f"""
@@ -382,7 +382,7 @@ def get_obj_irrelevant_task_infer(pth, obj, part_attr, ins):
 def get_obj_part_task_openai(pth, obj, parts, part_attr, category_tasks):
     openai_client = OpenAI(
         base_url="https://api.zhizengzeng.com/v1",
-        api_key="sk-zk2f7b0762a500c2b32bd4c24657b238d29693cf94767c23"
+        api_key=os.getenv("ZHIZENGZENG_API_KEY")
     )
     pth = Path(pth)
     img = encode_image_to_base64(pth / "0_color.png")
@@ -488,7 +488,7 @@ def get_obj_part_task_openai(pth, obj, parts, part_attr, category_tasks):
 def get_obj_category_task_openai(pth, obj):
     openai_client = OpenAI(
         base_url="https://api.zhizengzeng.com/v1",
-        api_key="sk-zk2f7b0762a500c2b32bd4c24657b238d29693cf94767c23"
+        api_key=os.getenv("ZHIZENGZENG_API_KEY")
     )
     pth = Path(pth)
     # part = [item.strip() for item in parts.split(',')]
@@ -553,7 +553,7 @@ def get_obj_category_task_openai(pth, obj):
 def get_task_infer_openai(pth, obj, part_attr, description, task):
     openai_client = OpenAI(
     base_url="https://api.zhizengzeng.com/v1",
-    api_key="sk-zk2f7b0762a500c2b32bd4c24657b238d29693cf94767c23"
+    api_key=os.getenv("ZHIZENGZENG_API_KEY")
     )
     pth = Path(pth)
     # part = [item.strip() for item in parts.split(',')]
