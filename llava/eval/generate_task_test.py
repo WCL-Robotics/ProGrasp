@@ -155,17 +155,21 @@ def eval_model(args):
 
     model.config.use_dialogue = True
 
-    num_val = 42
-    len_data = len(test_dataset)
-    data_list = list(range(len_data))
-    selected_data = random.sample(data_list, num_val)
+    obj = '229_screwdriver'
+    obj_index = test_dataset.get_obj_task(obj)
+    task = 'Grasp the screwdriver to hammer the nail into the wood.'
+    instance = test_dataset.get_data_info(index=obj_index, task=task)
+    selected_data = [instance]
+
+    # num_val = 42
+    # len_data = len(test_dataset)
+    # data_list = list(range(len_data))
+    # selected_data = random.sample(data_list, num_val)
 
     grasp_dict = {}
     accuracy_cnt = 0
     avg_time = 0.0
     for i in tqdm(selected_data):
-
-        instance = test_dataset.__getitem__(i)
         gt_grasps = instance["grasps"]
         pc_path = instance["pc_path"]
         scene = instance["scene"]
@@ -230,7 +234,6 @@ def eval_model(args):
                 if step_idx != 1 and correct_answers[step_idx+1] == text:
                     accuracy_cnt += 1
                 print(f"Generated answer {step_idx+1}:", text)
-                print(f"Correct answer {step_idx+1}:", correct_answers[step_idx+1])
                 conv.messages[-1][-1] = text
 
 
@@ -254,10 +257,8 @@ def eval_model(args):
                 new_tokens = generated[:, inputs["input_ids"].shape[1]:]
                 text = tokenizer.batch_decode(new_tokens, skip_special_tokens=True)[0]
                 print("Generated answer:", text)
-    avg_time /= num_val
-    print(f"\nAverage time per scene: {avg_time:.2f} seconds")
-    print(f"\nOverall accuracy: {accuracy_cnt}/{num_val*2} = {accuracy_cnt/(num_val*2):.4f}")
 
+    print(f"\nTime per scene: {avg_time:.2f} seconds")
         # with torch.inference_mode():
         #     generated = model.generate(
         #         **inputs,

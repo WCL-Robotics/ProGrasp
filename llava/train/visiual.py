@@ -993,7 +993,7 @@ def visualize_pc_data():
     task_obj = '/media/robot/data/WCL/taskgrasp/taskgrasp_image/scans'
     folders = [f for f in os.listdir(task_obj) if os.path.isdir(os.path.join(task_obj, f))]
     folders_sorted = sorted(folders, key=lambda s: int(s[:3]))
-    folders_sorted_selected = folders_sorted[6:7]
+    folders_sorted_selected = folders_sorted[139:140]
 
     for file in folders_sorted_selected:
         grasp_path = f"/media/robot/data/WCL/taskgrasp/taskgrasp_image/scans/{file}"
@@ -1001,9 +1001,9 @@ def visualize_pc_data():
 
         pcd = np.load(f"/media/robot/data/WCL/taskgrasp/taskgrasp_image/scans/{file}/fused_pc_clean.npy")
         # Downsample to 8192 points
-        # if pcd.shape[0] > 4096:
-        #     _, indices = farthest_points(pcd[:, :3], 4096, distance_by_translation_point, return_center_indexes=True)
-        #     pcd = pcd[indices]
+        if pcd.shape[0] > 4096:
+            _, indices = farthest_points(pcd[:, :3], 4096, distance_by_translation_point, return_center_indexes=True)
+            pcd = pcd[indices]
 
         # pc_mean = pcd[:, :3].mean(axis=0)
         # pcd[:, :3] -= pc_mean
@@ -1027,7 +1027,7 @@ def visualize_pc_data():
         eps = 1e-6  # 或者 1e-3 看你后续鲁棒性
         pcd[:, 2] += (-z_min + eps)
 
-        dz = -pcd[:, 2].min() + eps  # 你对点云加的这个值
+        dz = -z_min + eps  # 你对点云加的这个值
         T_shift = np.eye(4, dtype=np.float32)
         T_shift[2, 3] = dz
         grasps = T_shift[None, :, :] @ grasps
@@ -1060,10 +1060,23 @@ def visualize_pc_data():
         grasp_pc = np.matmul(grasps, grasp_pc.T).transpose(0, 2, 1)
         grasp_pc = grasp_pc[:, :, :3]
 
-        for i in range(1, len(grasps)):
-            grasp_mesh = get_gripper_control_points_o3d(grasps[i])
+        
+        # part-related：152_spoon [2, 12, 14, 18, 19]
+        # 020_mug [1, 2, 7, 8 ,9]
+        # 178_fork [11, 17, 21, 23]
+        # part-irrelevant：158_spoon [5, 0, 8, 21, 14] 135_hammer [0, 3, 5, 10, 11] 229_screwdriver
+        # Category-related 174_spatula [3, 15, 7, 8, 9]
+        # 160_brush [2, 4, 7, 21]
+        # 114_scissors [0, 1, 4, 5]
+        num = [0, 3, 5, 10, 11]
+        
+                                
+        # for i in range(19, len(grasps)):
+        for i in num:
+            grasp_mesh = get_gripper_control_points_o3d(grasps[i], color=(1.0, 0.0, 0.0))
+            # grasp_mesh = get_gripper_control_points_o3d(grasps[i])
             all_grasp_meshes.extend(grasp_mesh)
-            break
+            
             # 绘制 grasp_pc 的 7 个点为红色小球
             # points = grasp_pc[i]  # shape: [7, 3]
             # for p in points:
@@ -1172,6 +1185,11 @@ def draw_voxels_with_gap(pcd: o3d.geometry.PointCloud, voxel_size=0.0125, shrink
 
 def voxel_visualize_with_gap(npy_path, voxel_size=0.0125, shrink=0.85, alpha=0.8):
     pcd_np = np.load(npy_path)
+    
+    if pcd_np.shape[0] > 4096:
+        _, indices = farthest_points(pcd_np[:, :3], 4096, distance_by_translation_point, return_center_indexes=True)
+        pcd_np = pcd_np[indices]
+        
     xyz = pcd_np[:, :3].astype(np.float64)
 
     pcd = o3d.geometry.PointCloud()
@@ -1180,9 +1198,9 @@ def voxel_visualize_with_gap(npy_path, voxel_size=0.0125, shrink=0.85, alpha=0.8
     draw_voxels_with_gap(pcd, voxel_size=voxel_size, shrink=shrink, alpha=alpha)
 
 if __name__ == "__main__":
-    # visualize_pc_data()
-    voxel_visualize_with_gap(
-        "/media/robot/data/WCL/taskgrasp/taskgrasp_image/scans/008_masher/fused_pc_clean.npy",
-        voxel_size=0.005,
-        shrink=0.85
-    )
+    visualize_pc_data()
+    # voxel_visualize_with_gap(
+    #     "/media/robot/data/WCL/taskgrasp/taskgrasp_image/scans/154_spoon/fused_pc_clean.npy",
+    #     voxel_size=0.005,
+    #     shrink=0.85
+    # )

@@ -62,62 +62,95 @@ def load_pretrained_grasp_model(model_path, model_base, model_name, torch_dtype=
                 model.lm_head.weight = torch.nn.Parameter(torch.empty(token_num, tokem_dim, device=model.device, dtype=model.dtype))
                 model.model.embed_tokens.weight = torch.nn.Parameter(torch.empty(token_num, tokem_dim, device=model.device, dtype=model.dtype))
 
-            print('Loading additional LLaVA weights...')
-            from peft import PeftModel
-            print('Loading LoRA weights...')
-            model = PeftModel.from_pretrained(model, model_path)
-            print('Merging LoRA weights...')
-            model = model.merge_and_unload()
 
             # Force grasp_tower to float32 AFTER merging LoRA
             # Because merge_and_unload might cast everything to base model's dtype (bf16/fp16)
             # if hasattr(model.get_model(), 'voxel_tower') and model.get_model().voxel_tower is not None:
             #     print("Forcing voxel_tower to float32...")
             #     model.get_model().voxel_tower.to(dtype=torch.float32)
+
+
+            # if os.path.exists(os.path.join(model_path, 'non_lora_trainables.bin')):
+            #     non_lora_trainables = torch.load(os.path.join(model_path, 'non_lora_trainables.bin'), map_location='cpu')
+            # else:
+            #     # this is probably from HF Hub
+            #     from huggingface_hub import hf_hub_download
+            #     def load_from_hf(repo_id, filename, subfolder=None):
+            #         cache_file = hf_hub_download(
+            #             repo_id=repo_id,
+            #             filename=filename,
+            #             subfolder=subfolder)
+            #         return torch.load(cache_file, map_location='cpu')
+            #     non_lora_trainables = load_from_hf(model_path, 'non_lora_trainables.bin')
+            # non_lora_trainables = {(k[11:] if k.startswith('base_model.') else k): v for k, v in non_lora_trainables.items()}
+            # if any(k.startswith('model.model.') for k in non_lora_trainables):
+            #     non_lora_trainables = {(k[6:] if k.startswith('model.') else k): v for k, v in non_lora_trainables.items()}
+            # model.load_state_dict(non_lora_trainables, strict=False)
+
+            if os.path.exists(os.path.join(model_path, 'mm_projector.bin')):
+                mm_projector_weights = torch.load(os.path.join(model_path, 'mm_projector.bin'), map_location='cpu')
+                
+                # new_weights = {}
+                # for k, v in mm_projector_weights.items():
+                #     if 'voxel_tower' in k:
+                #         new_weights[k] = v.to(torch.float32)
+                #     elif 'grasp_tower' in k:
+                #         new_weights[k] = v.to(torch.float32)
+                #     else:
+                #         new_weights[k] = v.to(torch.float16)
+                # mm_projector_weights = new_weights
+                
+                # mm_projector_weights = {(k[11:] if k.startswith('base_model.') else k): v for k, v in mm_projector_weights.items()}
+                # if any(k.startswith('model.model.') for k in mm_projector_weights):
+                #     mm_projector_weights = {(k[6:] if k.startswith('model.') else k): v for k, v in mm_projector_weights.items()}
+                
+                # # Fix for det_head keys: model.det_head -> det_head
+                # mm_projector_weights = {(k[6:] if k.startswith('model.det_head') else k): v for k, v in mm_projector_weights.items()}
+                fixed_weights = {}
+                for k, v in mm_projector_weights.items():
+                    # dtype 处理
+                    if 'voxel_tower' in k:
+                        v = v.to(torch.float32)
+                    elif 'grasp_tower' in k:
+                        v = v.to(torch.float32)
+                    else:
+                        v = v.to(torch.float16)
+
+                    # 去掉前缀
+                    if k.startswith('base_model.'):
+                        k = k[11:]
+                    if k.startswith('model.model.'):
+                        k = k[6:]   # model.model.xxx -> model.xxx
+                    if k.startswith('model.det_head'):
+                        k = k[6:]   # model.det_head.xxx -> det_head.xxx
+
+                    # 关键：把 LoRA 包装层里的 base_layer 还原成普通线性层命名
+                    # det_head.xxx.out_proj.base_layer.weight -> det_head.xxx.out_proj.weight
+                    # det_head.xxx.out_proj.base_layer.bias   -> det_head.xxx.out_proj.bias
+                    if '.base_layer.' in k:
+                        k = k.replace('.base_layer.', '.')
+
+                    # 这一步先不加载 LoRA adapter 参数
+                    # 因为当前模型还没被 PeftModel 包装，这些 key 一定对不上
+                    if '.lora_A.' in k or '.lora_B.' in k:
+                        continue
+
+                    fixed_weights[k] = v
+                # msg =model.load_state_dict(mm_projector_weights, strict=False)
+                msg =model.load_state_dict(fixed_weights, strict=False)
+                print("mm_projector missing:", msg.missing_keys[:20])
+                print("mm_projector unexpected:", msg.unexpected_keys[:20])
+
+            print('Loading additional LLaVA weights...')
+            from peft import PeftModel
+            print('Loading LoRA weights...')
+            model = PeftModel.from_pretrained(model, model_path)
+            model = model.merge_and_unload()
+
             if hasattr(model.get_model(), 'grasp_tower') and model.get_model().grasp_tower is not None:
                 print("Forcing grasp_tower to float32...")
                 model.get_model().grasp_tower.to(dtype=torch.float32)
 
-            if os.path.exists(os.path.join(model_path, 'non_lora_trainables.bin')):
-                non_lora_trainables = torch.load(os.path.join(model_path, 'non_lora_trainables.bin'), map_location='cpu')
-            else:
-                # this is probably from HF Hub
-                from huggingface_hub import hf_hub_download
-                def load_from_hf(repo_id, filename, subfolder=None):
-                    cache_file = hf_hub_download(
-                        repo_id=repo_id,
-                        filename=filename,
-                        subfolder=subfolder)
-                    return torch.load(cache_file, map_location='cpu')
-                non_lora_trainables = load_from_hf(model_path, 'non_lora_trainables.bin')
-            non_lora_trainables = {(k[11:] if k.startswith('base_model.') else k): v for k, v in non_lora_trainables.items()}
-            if any(k.startswith('model.model.') for k in non_lora_trainables):
-                non_lora_trainables = {(k[6:] if k.startswith('model.') else k): v for k, v in non_lora_trainables.items()}
-            model.load_state_dict(non_lora_trainables, strict=False)
-
-            # if os.path.exists(os.path.join(model_path, 'mm_projector.bin')):
-            #     mm_projector_weights = torch.load(os.path.join(model_path, 'mm_projector.bin'), map_location='cpu')
-            #     # mm_projector_weights = {k: v.to(torch.float16) for k, v in mm_projector_weights.items()}
-                
-            #     new_weights = {}
-            #     for k, v in mm_projector_weights.items():
-            #         if 'voxel_tower' in k:
-            #             new_weights[k] = v.to(torch.float32)
-            #         elif 'grasp_tower' in k:
-            #             new_weights[k] = v.to(torch.float32)
-            #         else:
-            #             new_weights[k] = v.to(torch.float16)
-            #     mm_projector_weights = new_weights
-                
-            #     mm_projector_weights = {(k[11:] if k.startswith('base_model.') else k): v for k, v in mm_projector_weights.items()}
-            #     if any(k.startswith('model.model.') for k in mm_projector_weights):
-            #         mm_projector_weights = {(k[6:] if k.startswith('model.') else k): v for k, v in mm_projector_weights.items()}
-                
-            #     # Fix for det_head keys: model.det_head -> det_head
-            #     mm_projector_weights = {(k[6:] if k.startswith('model.det_head') else k): v for k, v in mm_projector_weights.items()}
-
-            #     model.load_state_dict(mm_projector_weights, strict=False)
-                
             print('Model is loaded...')
         elif model_base is not None:
             # this may be mm projector only

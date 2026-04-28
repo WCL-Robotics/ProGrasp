@@ -41,8 +41,8 @@ from llava.mm_utils import tokenizer_image_token, map_obj, PlainBoxFormatter, to
 from PIL import Image
 
 # from llava.train.GraspcotDataset import GraspcotDataset_Train
-from llava.train.Graspcot_Task_Dataset import GraspcotDataset_Train
-# from llava.train.Graspcot_Grasp_Dataset import GraspcotDataset_Train
+# from llava.train.Graspcot_Task_Dataset import GraspcotDataset_Train
+from llava.train.Graspcot_Grasp_Dataset import GraspcotDataset_Train
 
 from datetime import datetime
 import shutil
@@ -1062,13 +1062,13 @@ def train(attn_implementation=None):
         )
     model.config.use_cache = False
 
-    # if model_args.lora_model_path is not None:
-    #     from peft import PeftModel
-    #     print(f"Loading LoRA from {model_args.lora_model_path}")
-    #     model = PeftModel.from_pretrained(model, model_args.lora_model_path)
-    #     print("Merging LoRA weights...")
-    #     model = model.merge_and_unload()
-    #     print("LoRA merged and unloaded")
+    if model_args.lora_model_path is not None:
+        from peft import PeftModel
+        print(f"Loading LoRA from {model_args.lora_model_path}")
+        model = PeftModel.from_pretrained(model, model_args.lora_model_path)
+        print("Merging LoRA weights...")
+        model = model.merge_and_unload()
+        print("LoRA merged and unloaded")
 
     if model_args.freeze_backbone:
         model.model.requires_grad_(False)
@@ -1197,8 +1197,7 @@ def train(attn_implementation=None):
             model.requires_grad_(False)
 
             for p in model.get_model().grasp_tower.parameters():
-                # p.requires_grad = True
-                p.requires_grad = False
+                p.requires_grad = True
             
             if training_args.lora_enable:
                 for name, p in model.named_parameters():
@@ -1215,14 +1214,11 @@ def train(attn_implementation=None):
             #     for p in model.get_model().voxel_tower.parameters():
             #         p.requires_grad = True
             # =========================================================================
-
-            #         
         model.config.freeze_mm_mlp_adapter = training_args.freeze_mm_mlp_adapter
 
         if training_args.freeze_mm_mlp_adapter:
             for p in model.get_model().mm_projector.parameters():
                 p.requires_grad = False 
-
 
         if training_args.bits in [4, 8]:
             model.get_model().mm_projector.to(dtype=compute_dtype, device=training_args.device)
@@ -1243,8 +1239,7 @@ def train(attn_implementation=None):
     det_head.to(dtype=torch.bfloat16 if training_args.bf16 else torch.float32, device=training_args.device)
 
     for p in model.det_head.parameters():
-        # p.requires_grad = True
-        p.requires_grad = False
+        p.requires_grad = True
 
     model.config.use_dialogue = False 
     if data_args.dialogue:

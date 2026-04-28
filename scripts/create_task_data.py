@@ -26,7 +26,7 @@ from sklearn.cluster import KMeans
 import trimesh.transformations as tra
 import open3d as o3d   # 追加
 from llava.train.visiual import merge_grasp
-from llava.train.llm import read_grasp_part
+from llava.train.llm import read_grasp_part, parse_txt_to_records
 
 from scipy.spatial.transform import Rotation as R
 import imageio
@@ -209,16 +209,40 @@ def _fill_grasp_trainval_infos(version="train", pruning=False):
 
     print("Processing dataset for {} set!".format(version))
 
+    with open("/media/robot/data/WCL/taskgrasp/taskgrasp_image/misc.pkl", "rb") as f:
+        misc_data = pickle.load(f)[0]
+
     id = 0 # glyou debug
+    task = task_classification()
     if version == "train":
-        train_data = read_data("/media/robot/data/WCL/taskgrasp/taskgrasp_image/splits_final/i/0/train_i.txt")
-        val_data  = read_data("/media/robot/data/WCL/taskgrasp/taskgrasp_image/splits_final/i/0/val_i.txt")
-        train_data = list(dict.fromkeys(train_data + val_data))
+        part_filenames = task["train_files"]
+        # class
+        # train_data = read_data("/media/robot/data/WCL/taskgrasp/taskgrasp_image/splits_final/o/0/train_o.txt")
+        # val_data  = read_data("/media/robot/data/WCL/taskgrasp/taskgrasp_image/splits_final/o/0/val_o.txt")
+        # train_data = (dict.fromkeys(train_data + val_data))
+        # part_filenames = []
+        # for key in train_data:
+        #     if key in misc_data:
+        #         part_filenames.extend(misc_data[key])
+        
+        # instance
+        # train_data = read_data("/media/robot/data/WCL/taskgrasp/taskgrasp_image/splits_final/i/0/train_i.txt")
+        # val_data  = read_data("/media/robot/data/WCL/taskgrasp/taskgrasp_image/splits_final/i/0/val_i.txt")
+        # train_data = list(dict.fromkeys(train_data + val_data))
 
         # part_filenames = filenames[id*seperate_num:min((id+1)*seperate_num, int(len(filenames)*4/5))]   # 80% scenes for training
     else:
-        test_data = read_data("/media/robot/data/WCL/taskgrasp/taskgrasp_image/splits_final/i/0/test_i.txt")
-        part_filenames = test_data
+        part_filenames = task["test_files"]
+        # class
+        # test_data = read_data("/media/robot/data/WCL/taskgrasp/taskgrasp_image/splits_final/o/0/test_o.txt")
+        # part_filenames = []
+        # for key in test_data:
+        #     if key in misc_data:
+        #         part_filenames.extend(misc_data[key])
+
+        # instance
+        # test_data = read_data("/media/robot/data/WCL/taskgrasp/taskgrasp_image/splits_final/i/0/test_i.txt")
+        # part_filenames = test_data
         # part_filenames = filenames[int(len(filenames)*4/5)+id*seperate_num:min(int(len(filenames)*4/5)+(id+1)*seperate_num, len(filenames))]   # 20% scenes for val
     
     # Open3D Visualizer Setup
@@ -230,6 +254,7 @@ def _fill_grasp_trainval_infos(version="train", pruning=False):
     for jj, filename in enumerate(tqdm(part_filenames)):
         scene = filename
         prompts = read_grasp_part(f"{path}/{scene}/visual_grasps/grasps_part.txt")
+        property = read_grasp_part(f"{path}/{scene}/visual_grasps/grasps_property.txt")
 
         # num_objects = len(prompts)
         gs_list = []
@@ -281,6 +306,7 @@ def _fill_grasp_trainval_infos(version="train", pruning=False):
             gs_label_list.append(gs_labels)
 
         pos_prompt_list.append(prompts)
+        pos_prompt_list.append(property)
 
         if len(gs_list)==0:
             continue
@@ -500,7 +526,7 @@ def create_grasp_infos(root_path,
     print('{} sample: {}'.format(version, len(infos)))
     data = dict(infos=infos, metadata=metadata)
     info_path = osp.join(root_path,
-                            '{}_infos_{}_'.format(info_prefix, version)+str(id)+'.pkl')
+                            '{}_infos_{}_'.format(info_prefix, version)+str(id)+'_task'+'.pkl')
     dump(data, info_path)
     print('Finish {}_infos_{}_'.format(info_prefix, version)+str(id))
 
@@ -511,18 +537,102 @@ def parse_args():
     # parser.add_argument('--version', required=True)
     # parser.add_argument('--pruning', action="store_true")
     # parser.add_argument("--id", type=int, help="dataset is too big and needs ids to seperate.")
-    parser.add_argument('--version', default="train")
+    parser.add_argument('--version', default="test")
     parser.add_argument('--pruning', default=True)
     parser.add_argument("--id", type=int, default=0)
     args = parser.parse_args()
     return args
 
+def task_classification():
+    pth = '/media/robot/data/WCL/taskgrasp/taskgrasp_image/scans'
+    folders = [f for f in os.listdir(pth) if os.path.isdir(os.path.join(pth, f))]
+    folders_sorted = sorted(folders, key=lambda s: int(s[:3]))
+    folders_sorted_selected = folders_sorted[:]
+    
+    category_task_sum = []
+    part_task_sum = []
+    part_irrelevant_task_sum = []
+    for file in folders_sorted_selected:
+        category_task = parse_txt_to_records(txt_path=f"{pth}/{file}/task_category_related_infer.txt")
+        part_task = parse_txt_to_records(txt_path=f"{pth}/{file}/task_part_related_infer.txt")
+        part_irrelevant_task = parse_txt_to_records(txt_path=f"{pth}/{file}/task_part_irrelevant_infer.txt")
+        for i in range(0,5):
+            category_task[i].append(file)
+            category_task[i].append('category_task')
+            part_task[i].append(file)
+            part_task[i].append('part_task')
+            part_irrelevant_task[i].append(file)
+            part_irrelevant_task[i].append('part_irrelevant_task')
+            category_task_sum.append(category_task[i])
+            part_task_sum.append(part_task[i])
+            part_irrelevant_task_sum.append(part_irrelevant_task[i])
 
+    import random
+    random.seed(42)
+    random.shuffle(category_task_sum)
+    random.shuffle(part_task_sum)
+    random.shuffle(part_irrelevant_task_sum)
+
+    # 划分 80% 训练集，20% 测试集
+    split_cat = int(0.8 * len(category_task_sum))
+    train_category_tasks = category_task_sum[:split_cat]
+    test_category_tasks = category_task_sum[split_cat:]
+
+    split_part = int(0.8 * len(part_task_sum))
+    train_part_tasks = part_task_sum[:split_part]
+    test_part_tasks = part_task_sum[split_part:]
+
+    split_irrelevant = int(0.8 * len(part_irrelevant_task_sum))
+    train_irrelevant_tasks = part_irrelevant_task_sum[:split_irrelevant]
+    test_irrelevant_tasks = part_irrelevant_task_sum[split_irrelevant:]
+
+    # 收集划分后的物体集合
+    train_files = set()
+    for t in train_category_tasks + train_part_tasks + train_irrelevant_tasks:
+        train_files.add(t[-2])
+
+    test_files = set()
+    for t in test_category_tasks + test_part_tasks + test_irrelevant_tasks:
+        test_files.add(t[-2])
+
+    print(f"Category Tasks -> Train: {len(train_category_tasks)} | Test: {len(test_category_tasks)}")
+    print(f"Part Tasks     -> Train: {len(train_part_tasks)} | Test: {len(test_part_tasks)}")
+    print(f"Irrelevant     -> Train: {len(train_irrelevant_tasks)} | Test: {len(test_irrelevant_tasks)}")
+    print(f"Objects -> Train: {len(train_files)} | Test: {len(test_files)} (Note: Overlap is expected)")
+
+    # 混合所有训练任务和测试任务并打乱
+    train_tasks_all = train_category_tasks + train_part_tasks + train_irrelevant_tasks
+    random.shuffle(train_tasks_all)
+
+    test_tasks_all = test_category_tasks + test_part_tasks + test_irrelevant_tasks
+    random.shuffle(test_tasks_all)
+
+    return {
+        "train_tasks_all": train_tasks_all,
+        "test_tasks_all": test_tasks_all,
+        "train_category_tasks": train_category_tasks,
+        "test_category_tasks": test_category_tasks,
+        "train_part_tasks": train_part_tasks,
+        "test_part_tasks": test_part_tasks,
+        "train_irrelevant_tasks": train_irrelevant_tasks,
+        "test_irrelevant_tasks": test_irrelevant_tasks,
+        "train_files": list(train_files),
+        "test_files": list(test_files)
+    }
 
 if __name__ == '__main__':
-    args = parse_args()
-    create_grasp_infos("/media/robot/data/WCL/taskgrasp/taskgrasp_image/",
-                          "grasp_task",
-                          version=args.version,
-                          pruning=args.pruning,
-                          id=args.id)
+    # args = parse_args()
+    # create_grasp_infos("/media/robot/data/WCL/taskgrasp/taskgrasp_image/",
+    #                       "grasp_task",
+    #                       version=args.version,
+    #                       pruning=args.pruning,
+    #                       id=args.id)
+    
+    task = task_classification()
+
+    # 将 task 字典保存为 pkl 文件
+    save_path = "/media/robot/data/WCL/taskgrasp/taskgrasp_image/task_classification.pkl"
+    with open(save_path, "wb") as f:
+        pickle.dump(task, f)
+    print(f"Task classification saved to {save_path}")
+

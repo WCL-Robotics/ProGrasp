@@ -30,7 +30,7 @@ import mmengine
 import random
 from tqdm import tqdm
 from llava.train.image import Image
-from llava.train.llm import read_move_attributes, read_object_part, read_part_attributes
+from llava.train.llm import read_move_attributes, read_object_part, read_part_attributes, read_part
 
 from packaging import version
 
@@ -653,7 +653,7 @@ class GraspcotDataset_Train(Dataset):
         self.tokenizer = tokenizer
         # self.ann_file = [f"data/grasp_anything/grasp_anything_infos_train_{str(i)}.pkl" for i in range(8)]
         # self.dialogue_file = ["data/grasp_anything/dialogues/dialogue_infos_train_all.pkl"]
-        self.ann_file = [f"/media/robot/data/WCL/taskgrasp/taskgrasp_image/grasp_task_infos_train_0.pkl"]
+        self.ann_file = [f"/media/robot/data/WCL/taskgrasp/taskgrasp_image/grasp_task_infos_train_0_class.pkl"]
         # self._load()
         self.aligned_infos = self.load_annotations(self.ann_file)
 
@@ -682,72 +682,31 @@ class GraspcotDataset_Train(Dataset):
                 data_infos['infos'] += tmp_data['infos']
         return data_infos
 
-    def align_annotations(self):
-        aligned_infos = dict(version=self.dialogue_infos['version'])
-        ann_infos = self.data_infos['infos']
-        dialogue_infos = self.dialogue_infos['infos']
-
-
-        aligned_list = []
-        scene_tokens_ann = set()
-        scene_tokens_dialogue = set()
-
-        for ann_info in ann_infos:
-            scene_token = ann_info.get('scene_token')
-            scene_tokens_ann.add(scene_token)
-
-        for dialogue_info in dialogue_infos:
-            scene_token = dialogue_info.get('scene_token')
-            if scene_token:
-                scene_tokens_dialogue.add(scene_token)
-
-        common_scene_tokens = scene_tokens_ann & scene_tokens_dialogue
-
-        combined_dict_cache = {}
-        for scene_token in common_scene_tokens:
-            combined_dict_cache[scene_token] = {}
-
-        for ann_info in ann_infos:
-            scene_token = ann_info.get('scene_token')
-            if scene_token in common_scene_tokens:
-                combined_dict_cache[scene_token].update(ann_info)
-
-        for dialogue_info in dialogue_infos:
-            scene_token = dialogue_info.get('scene_token')
-            if scene_token in common_scene_tokens:
-                combined_dict_cache[scene_token].update(dialogue_info)
-
-        for combined_dict in combined_dict_cache.values():
-            aligned_list.append(combined_dict)
-
-        aligned_infos['infos'] = aligned_list
-        return aligned_infos
-
-
     def get_data_info(self, index):
-        scene_idx = index // 4
-        prompt_idx = index % 4
-        info = self.aligned_infos['infos'][scene_idx]
+        # scene_idx = index // 4
+        # prompt_idx = index % 4
+        # info = self.aligned_infos['infos'][scene_idx]
+        info = self.aligned_infos['infos'][index]
         
         scene = info['scene_token']
         obj = scene.split('_', 1)[1]
-        try:
-            with open(f"/media/robot/data/WCL/taskgrasp/taskgrasp_image/scans/{scene}/prompt.pkl", "rb") as f:
-                prompts = pickle.load(f)
-                # prompt = random.choice(prompts)
-                prompt = prompts[prompt_idx]
+        # try:
+        #     with open(f"/media/robot/data/WCL/taskgrasp/taskgrasp_image/scans/{scene}/prompt.pkl", "rb") as f:
+        #         prompts = pickle.load(f)
+        #         # prompt = random.choice(prompts)
+        #         prompt = prompts[prompt_idx]
 
-        except Exception as e:
-            print(f"Error loading prompt for scene {scene}: {e}")
-            prompt = ["", "", "", ""]
-            obj_name_list = []
-        
-        motion_attributes = read_move_attributes(f"{self.dataset_path}/task")
+        # except Exception as e:
+        #     print(f"Error loading prompt for scene {scene}: {e}")
+        #     prompt = ["", "", "", ""]
+        #     obj_name_list = []
+        txt_parts = read_object_part(f"{self.dataset_path}/scans/{scene}/object_part.txt")
+        parts = read_part(f"{self.dataset_path}/scans/{scene}/object_part.txt")
+        grasp_part = random.choice(parts)
 
         pc_path = info['pc_path']
         img_path = info['img_path']
         depth_path = info['depth_path']
-        grasp_part = prompt[3][:-1]
 
         ext = torch.from_numpy(info['pose']).to(torch.bfloat16)
         intrinsic = torch.from_numpy(info['intrinsic']).to(torch.bfloat16)
@@ -788,14 +747,7 @@ class GraspcotDataset_Train(Dataset):
         conversations = []
         mask_conversations = []
 
-        parts = read_object_part(f"{self.dataset_path}/scans/{scene}/object_part.txt")
-        part_attr = read_part_attributes(f"{self.dataset_path}/scans/{scene}/object_property.txt")
-        part_pro = ''
-        for index in range(len(part_attr)):
-            part_pro += part_attr[index]
-        
-        motion_definition = get_motion_definition(motion_attributes, prompt[1])
-        request_str = f"The task is: {prompt[0]} This task belongs to the motion primitive {prompt[1]} The definition of this motion primitive is: {motion_definition} According to <image>, the object in the image is {obj}, which consists of the following parts: {parts} The attributes of each part are: {part_pro} The part {prompt[3][:-1]} satisfies the task semantics and can execute the motion primitives to which the task belongs. There are several grasps on the object the {obj}. <grasp_feature>. Which grasps are on the part {prompt[3][:-1]}?"
+        request_str = f"Given <image>, the object in the image is {obj}, which consists of the following parts: {txt_parts}. There are 25 candidate grasps for the {obj}. <grasp_feature>. Which grasps are located on the {grasp_part}?"
         # request_str = f"The task is: {prompt[0]} This task belongs to the motion primitive {prompt[1]} The definition of this motion primitive is: {motion_definition} The object is {obj}, which consists of the following parts: {parts} The attributes of each part are: {part_pro} The part {prompt[3][:-1]} satisfies the task semantics and can execute the motion primitives to which the task belongs. There are several grasps on the object the {obj}. <grasp_feature>. Which grasps are on the part {prompt[3][:-1]}?"
 
         indices = torch.nonzero(gs_labels.squeeze(1)).squeeze(1).tolist()
@@ -876,7 +828,7 @@ class GraspcotDataset_Train(Dataset):
         return data_dict
 
     def __len__(self):
-        return len(self.aligned_infos['infos']) * 4
+        return len(self.aligned_infos['infos'])
     
 
 class GraspcotDataset_Test(Dataset):

@@ -275,55 +275,82 @@ import os
         
 #         return out
 
+class FusionBlock(nn.Module):
+    """
+    A lightweight Q-Former style block:
+    1) self-attn on query tokens
+    2) cross-attn: query attends to image tokens
+    3) feed-forward network
+    """
+    def __init__(self, d_model=4096, num_heads=8, dropout=0.1, mlp_ratio=4.0):
+        super().__init__()
+
+        # Self-attention on query tokens
+        self.self_attn = nn.MultiheadAttention(
+            embed_dim=d_model,
+            num_heads=num_heads,
+            dropout=dropout,
+            batch_first=True
+        )
+
+        # Cross-attention: query -> image tokens
+        self.cross_attn = nn.MultiheadAttention(
+            embed_dim=d_model,
+            num_heads=num_heads,
+            dropout=dropout,
+            batch_first=True
+        )
+
+        hidden_dim = int(d_model * mlp_ratio)
+        self.ffn = nn.Sequential(
+            nn.Linear(d_model, hidden_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, d_model),
+        )
+
+        self.norm1 = nn.LayerNorm(d_model)
+        self.norm2 = nn.LayerNorm(d_model)
+        self.norm3 = nn.LayerNorm(d_model)
+
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, query, key_value, key_padding_mask=None):
+        # query:     (B, Nq, D)
+        # key_value: (B, Nk, D)
+
+        # 1) self-attn on query
+        q = self.norm1(query)
+        self_attn_out, _ = self.self_attn(q, q, q)
+        query = query + self.dropout(self_attn_out)
+
+        # 2) cross-attn: query attends to image tokens
+        q = self.norm2(query)
+        cross_attn_out, _ = self.cross_attn(
+            q, key_value, key_value, key_padding_mask=key_padding_mask
+        )
+        query = query + self.dropout(cross_attn_out)
+
+        # 3) FFN
+        query = query + self.ffn(self.norm3(query))
+
+        return query
+
+
 class GraspNet(nn.Module):
     def __init__(self):
         super(GraspNet, self).__init__()
         self.initialize()
 
-    def initialize(self, d_model=4096, num_heads=8, attn_dropout=0.1):
-        self.net = networks.define_classifier(
-            1, 0.1, 512, 2, [], "normal", 0.02, "cuda"
-        )
-        self.cross_attn = nn.MultiheadAttention(
-            embed_dim=d_model, num_heads=num_heads, dropout=attn_dropout, batch_first=True
-        )
-        self.q_norm = nn.LayerNorm(d_model)
-        self.kv_norm = nn.LayerNorm(d_model)
-
-    def forward(self, image_features, pc, grasps):
-        # print(f"[GraspNet] Initialization check:")
-        # for name, param in self.net.named_parameters():
-        #     print(f"[GraspNet] Param: {name}, Mean: {param.data.abs().mean().item():.6f}, Std: {param.data.std().item():.6f}")
-
-        with torch.cuda.amp.autocast(enabled=False):
-            result = self.net.encode(pc, grasps)
-            # image_features is a list of variable length tensors, we need to pad them
-            image_features = [f.to(dtype=result.dtype) for f in image_features]
-            
-            lengths = [f.shape[0] for f in image_features]
-            max_len = max(lengths)
-            batch_size = len(image_features)
-
-            # Create key_padding_mask: True indicates the position is padding and should be ignored
-            key_padding_mask = torch.ones((batch_size, max_len), dtype=torch.bool, device=result.device)
-            for i, length in enumerate(lengths):
-                key_padding_mask[i, :length] = False
-
-            # Pad the sequence to (B, max_len, D)
-            image_features_padded = torch.nn.utils.rnn.pad_sequence(image_features, batch_first=True)
-
-            # result: (B, D) -> query: (B, 1, D)
-            query = result.unsqueeze(1)
-            key_value = image_features_padded
-
-            query = self.q_norm(query)
-            key_value = self.kv_norm(key_value)
-
-            # Cross attention: query attends to key_value
-            attn_output, _ = self.cross_attn(query, key_value, key_value, key_padding_mask=key_padding_mask)
-
-            out = result.unsqueeze(1) + attn_output
-            return out
+    # def initialize(self, d_model=4096, num_heads=8, attn_dropout=0.1):
+    #     self.net = networks.define_classifier(
+    #         1, 0.1, 512, 2, [], "normal", 0.02, "cuda"
+    #     )
+    #     self.cross_attn = nn.MultiheadAttention(
+    #         embed_dim=d_model, num_heads=num_heads, dropout=attn_dropout, batch_first=True
+    #     )
+    #     self.q_norm = nn.LayerNorm(d_model)
+    #     self.kv_norm = nn.LayerNorm(d_model)
 
     # def forward(self, image_features, pc, grasps):
     #     # print(f"[GraspNet] Initialization check:")
@@ -332,20 +359,125 @@ class GraspNet(nn.Module):
 
     #     with torch.cuda.amp.autocast(enabled=False):
     #         result = self.net.encode(pc, grasps)
-        
-    #         # Ensure result has the same dtype as image_features for attention
-    #         image_features = image_features.to(dtype=result.dtype)
+    #         # image_features is a list of variable length tensors, we need to pad them
+    #         image_features = [f.to(dtype=result.dtype) for f in image_features]
+            
+    #         lengths = [f.shape[0] for f in image_features]
+    #         max_len = max(lengths)
+    #         batch_size = len(image_features)
 
-    #         query = result.unsqueeze(0)
-    #         key_value = image_features.unsqueeze(0)
+    #         # Create key_padding_mask: True indicates the position is padding and should be ignored
+    #         key_padding_mask = torch.ones((batch_size, max_len), dtype=torch.bool, device=result.device)
+    #         for i, length in enumerate(lengths):
+    #             key_padding_mask[i, :length] = False
+
+    #         # Pad the sequence to (B, max_len, D)
+    #         image_features_padded = torch.nn.utils.rnn.pad_sequence(image_features, batch_first=True)
+
+    #         # result: (B, D) -> query: (B, 1, D)
+    #         query = result.unsqueeze(1)
+    #         key_value = image_features_padded
 
     #         query = self.q_norm(query)
     #         key_value = self.kv_norm(key_value)
 
     #         # Cross attention: query attends to key_value
-    #         attn_output, _ = self.cross_attn(query, key_value, key_value)
+    #         attn_output, _ = self.cross_attn(query, key_value, key_value, key_padding_mask=key_padding_mask)
 
-    #         return attn_output.squeeze(0)
+    #         out = result.unsqueeze(1) + attn_output
+    #         return out
+
+    def initialize(
+        self,
+        d_model=4096,
+        num_heads=8,
+        attn_dropout=0.1,
+        num_fusion_layers=2,
+        num_query_tokens=1,
+        mlp_ratio=4.0,
+    ):
+        self.net = networks.define_classifier(
+            1, 0.1, 512, 2, [], "normal", 0.02, "cuda"
+        )
+
+        self.num_query_tokens = num_query_tokens
+
+        # 如果想把单个 result 扩成多个可学习 query token，可以启用这个
+        if num_query_tokens > 1:
+            self.query_tokens = nn.Parameter(torch.randn(1, num_query_tokens, d_model))
+            nn.init.normal_(self.query_tokens, std=0.02)
+        else:
+            self.query_tokens = None
+
+        self.kv_norm = nn.LayerNorm(d_model)
+        self.q_input_norm = nn.LayerNorm(d_model)
+
+        self.fusion_layers = nn.ModuleList([
+            FusionBlock(
+                d_model=d_model,
+                num_heads=num_heads,
+                dropout=attn_dropout,
+                mlp_ratio=mlp_ratio
+            )
+            for _ in range(num_fusion_layers)
+        ])
+
+        self.final_norm = nn.LayerNorm(d_model)
+
+    def forward(self, image_features, pc, grasps):
+        # print(f"[GraspNet] Initialization check:")
+        # for name, param in self.net.named_parameters():
+        #     print(f"[GraspNet] Param: {name}, Mean: {param.data.abs().mean().item():.6f}, Std: {param.data.std().item():.6f}")
+        with torch.cuda.amp.autocast(enabled=False):
+            # result: (B, D)
+            result = self.net.encode(pc, grasps)
+
+            image_features = [f.to(device=result.device, dtype=result.dtype) for f in image_features]
+
+            lengths = [f.shape[0] for f in image_features]
+            max_len = max(lengths)
+            batch_size = len(image_features)
+
+            # key_padding_mask: True means padding, should be ignored
+            key_padding_mask = torch.ones(
+                (batch_size, max_len),
+                dtype=torch.bool,
+                device=result.device
+            )
+            for i, length in enumerate(lengths):
+                key_padding_mask[i, :length] = False
+
+            # Pad image token sequence to (B, max_len, D)
+            image_features_padded = torch.nn.utils.rnn.pad_sequence(
+                image_features, batch_first=True
+            )
+
+            key_value = self.kv_norm(image_features_padded)
+
+            # ---- Build query tokens ----
+            if self.num_query_tokens == 1:
+                # (B, D) -> (B, 1, D)
+                query = result.unsqueeze(1)
+            else:
+                # 多 query token 版本：
+                # 用 result 作为主 query，再加 learnable query tokens
+                base_query = result.unsqueeze(1)  # (B, 1, D)
+                learned_queries = self.query_tokens.expand(batch_size, -1, -1)  # (B, Nq, D)
+                learned_queries[:, 0:1, :] = learned_queries[:, 0:1, :] + base_query
+                query = learned_queries
+
+            query = self.q_input_norm(query)
+
+            # ---- stacked fusion transformer ----
+            for layer in self.fusion_layers:
+                query = layer(
+                    query=query,
+                    key_value=key_value,
+                    key_padding_mask=key_padding_mask
+                )
+
+            out = self.final_norm(query)  # (B, Nq, D)
+            return out
 
 if __name__ == "__main__":
     # task_obj = '/media/robot/data/WCL/taskgrasp/taskgrasp_image/scans'

@@ -332,6 +332,7 @@ class LlavaLlamaForCausalLM_v2(LlamaForCausalLM_v2, LlavaMetaForCausalLM):
             loss = loss_fct(shift_logits, shift_labels)
 
         # loss *= 0.0
+        # print("dialogue loss:", loss)
         
         if not return_dict:
             output = (logits,) + outputs[1:]

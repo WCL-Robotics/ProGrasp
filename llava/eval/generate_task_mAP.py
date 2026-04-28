@@ -109,6 +109,29 @@ def make_supervised_data_module(tokenizer: transformers.PreTrainedTokenizer,
                 eval_dataset=eval_dataset,
                 data_collator=data_collator)
 
+from sklearn.metrics import average_precision_score
+import numpy as np
+
+def calculate_map(y_true, y_pred, y_score, classes):
+    aps = []
+    
+    # Filter classes that exist in ground truth
+    valid_classes = [c for c in classes if c in y_true]
+    
+    for cls in valid_classes:
+        # Ground truth binary labels for current class
+        y_true_cls = [1 if gt == cls else 0 for gt in y_true]
+        
+        # Retrieval score: If prediction matches class, use confidence score. Else 0.
+        y_score_cls = [score if pred == cls else 0.0 for pred, score in zip(y_pred, y_score)]
+        
+        # Check if there are any positive samples (already filtered by valid_classes)
+        if sum(y_true_cls) > 0:
+            ap = average_precision_score(y_true_cls, y_score_cls)
+            aps.append(ap)
+            
+    return np.mean(aps) if aps else 0.0
+
 def eval_model(args):
     # Model
     disable_torch_init()
@@ -163,6 +186,13 @@ def eval_model(args):
     grasp_dict = {}
     accuracy_cnt = 0
     avg_time = 0.0
+
+    # Storage for mAP calculation
+    y_true_list = []
+    y_pred_list = []
+    ypred_score_list = []
+    class_set = set() # All unique classes
+
     for i in tqdm(selected_data):
 
         instance = test_dataset.__getitem__(i)
@@ -172,13 +202,14 @@ def eval_model(args):
         gs_labels = instance["gs_labels"]
         correct_answers = instance.pop("correct_answer")
         inputs = precess_data(tokenizer, instance)
+        if "labels" in inputs:
+             inputs.pop("labels", None)
         inputs["attention_mask"] = inputs["input_ids"].ne(tokenizer.pad_token_id)
 
         # outputs = model(**inputs)
 
 
         # generation 不需要 labels，去掉避免落入训练分支
-        inputs.pop("labels", None)
         grasp_out = False
 
         # Iterative Generation Logic
@@ -222,14 +253,44 @@ def eval_model(args):
                         # temperature=args.temperature,
                         top_p=args.top_p,
                         num_beams=args.num_beams,
+                        return_dict_in_generate=True,
+                        output_scores=True,
                     )
                 
-                # 7. Decode Answer
-                new_tokens = generated[:, input_ids.shape[1]:]
+                # 7. Decode Answer & Confidence
+                outputs = generated.sequences
+                scores = generated.scores
+                
+                # Calculate confidence score
+                try:
+                    # Depending on transformers version
+                    transition_scores = model.compute_transition_scores(
+                        outputs, scores, normalize_logits=True
+                    )
+                    # Use geometric mean of probabilities (exp of mean log prob)
+                    # We compute only for the FIRST answer in batch (since batch=1 usually)
+                    log_probs = transition_scores[0]
+                    confidence = np.exp(torch.mean(log_probs).cpu().numpy())
+                except:
+                    # Fallback if compute_transition_scores fails or model doesn't support
+                    confidence = 0.0
+                
+                new_tokens = outputs[:, input_ids.shape[1]:]
                 text = tokenizer.batch_decode(new_tokens, skip_special_tokens=True)[0].strip()
-                if step_idx != 1 and correct_answers[step_idx+1] == text:
-                    accuracy_cnt += 1
-                print(f"Generated answer {step_idx+1}:", text)
+                gt_text = correct_answers[step_idx+1]
+
+                if step_idx != 1:
+                    if gt_text == text:
+                        accuracy_cnt += 1
+                    
+                    # Accumulate for mAP
+                    y_pred_list.append(text)
+                    y_true_list.append(gt_text)
+                    ypred_score_list.append(confidence)
+                    class_set.add(gt_text)
+                    class_set.add(text)
+
+                print(f"Generated answer {step_idx+1}:", text, f"(Conf: {confidence:.4f})")
                 print(f"Correct answer {step_idx+1}:", correct_answers[step_idx+1])
                 conv.messages[-1][-1] = text
 
@@ -256,58 +317,13 @@ def eval_model(args):
                 print("Generated answer:", text)
     avg_time /= num_val
     print(f"\nAverage time per scene: {avg_time:.2f} seconds")
-    print(f"\nOverall accuracy: {accuracy_cnt}/{num_val*2} = {accuracy_cnt/(num_val*2):.4f}")
-
-        # with torch.inference_mode():
-        #     generated = model.generate(
-        #         **inputs,
-        #         max_new_tokens=args.max_new_tokens,
-        #         temperature=args.temperature,
-        #         top_p=args.top_p,
-        #         num_beams=args.num_beams,
-        #     )
-        #     new_tokens = generated[:, inputs["input_ids"].shape[1]:]
-        #     text = tokenizer.batch_decode(new_tokens, skip_special_tokens=True)[0]
-        #     print("Generated answer:", text)
-
-            
-            
-            # generation_inputs = {
-            #     "input_ids": inputs["input_ids"],
-            #     "images": inputs.get("images"),
-            #     "depths": inputs.get("depths"),
-            #     "poses": inputs.get("poses"),
-            #     "intrinsics": inputs.get("intrinsics"),
-            # }
-            # # 去掉 labels/attention_mask，不需要
-            # generation_inputs = {k: v for k, v in generation_inputs.items() if v is not None}
-
-            # model.config.pad_token_id = tokenizer.pad_token_id
-            # model.config.eos_token_id = tokenizer.eos_token_id
-
-            # with torch.inference_mode():
-            #     generated = model.generate(
-            #         **inputs,
-            #         max_new_tokens=args.max_new_tokens,
-            #         temperature=args.temperature,
-            #         top_p=args.top_p,
-            #         num_beams=args.num_beams,
-            #     )
-
-            # new_tokens = generated[:, inputs["input_ids"].shape[1]:]
-            # text = tokenizer.batch_decode(new_tokens, skip_special_tokens=True)[0]
-            # print("Generated answer:", text)
-
-            # grasp_outs, outputs = model(**inputs)
-
-            # grasps = model.predict_grasps(grasp_outs)
-            # pred_grasps, scores, labels = grasps[0]
-
-        # grasp_dict[scene]=dict(gen_grasps=pred_grasps, gt_grasps=gt_grasps, scores=scores, pc_path=pc_path, scene=scene)
-
-    # with open(os.path.join(args.output_dir, "scenegrasp_gen_data.pkl"), 'wb') as f:
-    #     pickle.dump(grasp_dict, f)
+    print(f"\nOverall accuracy: {accuracy_cnt}/{len(y_true_list)} = {accuracy_cnt/len(y_true_list):.4f}")
     
+    if len(y_true_list) > 0:
+        map_score = calculate_map(y_true_list, y_pred_list, ypred_score_list, list(class_set))
+        print(f"Overall mAP: {map_score:.4f}")
+    else:
+        print("No valid samples for mAP calculation.")
     
 
 
