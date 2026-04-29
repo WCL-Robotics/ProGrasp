@@ -29,7 +29,7 @@ import mmengine
 import random
 from tqdm import tqdm
 from llava.train.image import Image
-from llava.train.llm import read_move_attributes, read_object_part, read_part_attributes
+from llava.train.llm import read_interaction_property, read_object_part, read_part_attributes
 
 from packaging import version
 
@@ -630,7 +630,7 @@ class GraspcotDataset_Train(Dataset):
             prompt = ["", "", "", ""]
             obj_name_list = []
         
-        motion_attributes = read_move_attributes(f"{self.dataset_path}/task")
+        interaction_proerty = read_interaction_property(f"{self.dataset_path}/task")
 
         pc_path = info['pc_path']
         img_path = info['img_path']
@@ -676,7 +676,7 @@ class GraspcotDataset_Train(Dataset):
         conversations = []
         mask_conversations = []
         
-        request_str = f"15 Interaction Properties are defined as follows: {' '.join(motion_attributes)}. The task is: {prompt[0]}. Which type of Interaction Property does the task belong to?"
+        request_str = f"15 Interaction Properties are defined as follows: {' '.join(interaction_proerty)}. The task is: {prompt[0]}. Which type of Interaction Property does the task belong to?"
         response_str = f"{prompt[1]}"
         mask_response_str = mask_text_llava_compatible(response_str, self.tokenizer)
         request = {
@@ -910,7 +910,7 @@ class GraspcotDataset_Test(Dataset):
         # print("scene:", scene)
         # print("task:", prompt[0])
         # print("part", prompt[3])
-        motion_attributes = read_move_attributes(f"{self.dataset_path}/task")
+        interaction_proerty = read_interaction_property(f"{self.dataset_path}/task")
 
         if task is not None:
             prompt[0] = task
@@ -958,7 +958,7 @@ class GraspcotDataset_Test(Dataset):
         conversations = []
         mask_conversations = []
     
-        request_str_1 =  f"15 Interaction Properties are defined as follows: {' '.join(motion_attributes)}. The task is: {prompt[0]}. Which type of Interaction Property does the task belong to?"
+        request_str_1 =  f"15 Interaction Properties are defined as follows: {' '.join(interaction_proerty)}. The task is: {prompt[0]}. Which type of Interaction Property does the task belong to?"
         response_str = f"{prompt[1]}"
         mask_response_str = mask_text_llava_compatible(response_str, self.tokenizer)
         request = {

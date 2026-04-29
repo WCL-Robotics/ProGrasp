@@ -68,7 +68,7 @@ def read_part(pth):
     # print("物体部件列表:", obj_part)
     return obj_part
 
-def read_move_attributes(pth):
+def read_interaction_property(pth):
     attributes = pth + "/Movement_Property.txt"
     move_attributes = []
     with open(attributes, 'r', encoding='utf-8') as f:
