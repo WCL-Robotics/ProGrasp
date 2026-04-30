@@ -30,7 +30,7 @@ import mmengine
 import random
 from tqdm import tqdm
 from llava.train.image import Image
-from llava.train.llm import read_move_attributes, read_object_part, read_part_attributes, read_part
+from llava.train.llm import read_interaction_property, read_object_part, read_part_attributes, read_part, parse_txt_to_records
 
 from packaging import version
 
@@ -47,24 +47,6 @@ MAX_WIDTH = 0.202   # maximum width of gripper 2F-140
 img_w, img_h = 336, 336
 
 
-response_model = ["I'll retrieve <obj> for you momentarily.", \
-    "I'll grab <obj> as you need.", \
-    "Alright, I'll bring you <obj> right now to meet your requirement.", \
-    "No problem. I'll quickly obtain <obj> for you.", \
-    "I'll fetch <obj>.", \
-    "Okay, I'll go and pick up <obj> and return to you soon.", \
-    "I'll be happy to get <obj> for you.", \
-    "I'll seize <obj> without delay.", \
-    "Okay. I'll secure <obj>.", \
-    "Sure thing. I'll lay my hands on <obj> and bring to you pronto.", \
-    "Maybe you need <obj>.", \
-    "<obj>."]
-
-
-request_model = [" If you are a grasping bot, determine what you should help me grasp in this scene."]
-obj_num_model = ["The total number is ", \
-    "The number is ", \
-    ""]
 
 # number_model = ["one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", \
 #     "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen", "twenty", \
@@ -79,9 +61,7 @@ number_model = [
 # number_model = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", \
 #                 "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", \
 #                 "21", "22", "23", "24", "25"]
-num_response = len(response_model)
-num_request = len(request_model)
-num_obj_num = len(obj_num_model)
+
 
 def get_rgb(rgb_file_path, rot=0, zoom=1.0, normalise=True):
 
@@ -683,26 +663,27 @@ class GraspcotDataset_Train(Dataset):
         return data_infos
 
     def get_data_info(self, index):
-        # scene_idx = index // 4
-        # prompt_idx = index % 4
-        # info = self.aligned_infos['infos'][scene_idx]
-        info = self.aligned_infos['infos'][index]
+        scene_idx = index // 10
+        prompt_idx = index % 10
+        info = self.aligned_infos['infos'][scene_idx]
+        # info = self.aligned_infos['infos'][index]
         
         scene = info['scene_token']
         obj = scene.split('_', 1)[1]
-        # try:
-        #     with open(f"/media/robot/data/WCL/taskgrasp/taskgrasp_image/scans/{scene}/prompt.pkl", "rb") as f:
-        #         prompts = pickle.load(f)
-        #         # prompt = random.choice(prompts)
-        #         prompt = prompts[prompt_idx]
+        category_task = parse_txt_to_records(txt_path=f"{self.dataset_path}/scans/{scene}/task_category_related_infer.txt")
+        part_task = parse_txt_to_records(txt_path=f"{self.dataset_path}/scans/{scene}/task_part_related_infer.txt")
+        total_task = category_task + part_task
+        if total_task[prompt_idx][-1].strip('.') == "None":
+            # return self.get_data_info((index + 1) % len(self))
+            grasp_part = "None"
+        else:
+            txt_part = total_task[prompt_idx][-1]
+            grasp_part = re.search(r'Grasp part:\s*([^;.]+)', txt_part).group(1).strip()
 
-        # except Exception as e:
-        #     print(f"Error loading prompt for scene {scene}: {e}")
-        #     prompt = ["", "", "", ""]
-        #     obj_name_list = []
+
         txt_parts = read_object_part(f"{self.dataset_path}/scans/{scene}/object_part.txt")
-        parts = read_part(f"{self.dataset_path}/scans/{scene}/object_part.txt")
-        grasp_part = random.choice(parts)
+        # parts = read_part(f"{self.dataset_path}/scans/{scene}/object_part.txt")
+        # grasp_part = random.choice(parts)
 
         pc_path = info['pc_path']
         img_path = info['img_path']
@@ -714,8 +695,8 @@ class GraspcotDataset_Train(Dataset):
         gs_prompts_list = info['gs_prompts']
 
         new_gs_labels = []
-        for part_name in gs_prompts_list[0]:
-            if part_name == grasp_part:
+        for idx, part_name in enumerate(gs_prompts_list[0]):
+            if part_name == grasp_part and total_task[prompt_idx][1].strip('.') in gs_prompts_list[1][idx]:
                 new_gs_labels.append(1)
             else:
                 new_gs_labels.append(0)
@@ -747,9 +728,9 @@ class GraspcotDataset_Train(Dataset):
         conversations = []
         mask_conversations = []
 
-        request_str = f"Given <image>, the object in the image is {obj}, which consists of the following parts: {txt_parts}. There are 25 candidate grasps for the {obj}. <grasp_feature>. Which grasps are located on the {grasp_part}?"
+        # request_str = f"Given <image>, the object in the image is {obj}, which consists of the following parts: {txt_parts}. There are 25 candidate grasps for the {obj}. <grasp_feature>. Which grasps are located on the {grasp_part}?"
         # request_str = f"The task is: {prompt[0]} This task belongs to the motion primitive {prompt[1]} The definition of this motion primitive is: {motion_definition} The object is {obj}, which consists of the following parts: {parts} The attributes of each part are: {part_pro} The part {prompt[3][:-1]} satisfies the task semantics and can execute the motion primitives to which the task belongs. There are several grasps on the object the {obj}. <grasp_feature>. Which grasps are on the part {prompt[3][:-1]}?"
-
+        request_str = f"Given <image>, the object in the image is {obj}, which consists of the following parts: {txt_parts}. There are 25 candidate grasps for the {obj}. <grasp_feature>. Which grasps are located on the {grasp_part}?"
         indices = torch.nonzero(gs_labels.squeeze(1)).squeeze(1).tolist()
         number_words = [number_model[idx] for idx in indices]
         # Use "," instead of ", " to avoid tokenization mismatch (24 tokens diff for 25 items)
@@ -799,7 +780,8 @@ class GraspcotDataset_Train(Dataset):
         data_dict = preprocess(sources, tokenizer=self.tokenizer, has_image=True)
         mask_data_dict = preprocess(mask_sources, tokenizer=self.tokenizer, has_image=True)
 
-        input_ids = mask_data_dict["input_ids"][0]
+        # input_ids = mask_data_dict["input_ids"][0]
+        input_ids = data_dict["input_ids"][0]
         labels = data_dict["labels"][0]
 
         input_dict = dict(
@@ -828,7 +810,7 @@ class GraspcotDataset_Train(Dataset):
         return data_dict
 
     def __len__(self):
-        return len(self.aligned_infos['infos'])
+        return len(self.aligned_infos['infos']) * 10
     
 
 class GraspcotDataset_Test(Dataset):
@@ -871,67 +853,50 @@ class GraspcotDataset_Test(Dataset):
                 data_infos['infos'] += tmp_data['infos']
         return data_infos
 
-    def align_annotations(self):
-        aligned_infos = dict(version=self.dialogue_infos['version'])
-        ann_infos = self.data_infos['infos']
-        dialogue_infos = self.dialogue_infos['infos']
+    def get_obj_task(self, obj):
+        for index in range(len(self.aligned_infos['infos'])):
+            info = self.aligned_infos['infos'][index]
+            if info['scene_token'] == obj:
+                return index
 
-        aligned_list = []
-        scene_tokens_ann = set()
-        scene_tokens_dialogue = set()
-
-        for ann_info in ann_infos:
-            scene_token = ann_info.get('scene_token')
-            if scene_token:
-                scene_tokens_ann.add(scene_token)
-
-        for dialogue_info in dialogue_infos:
-            scene_token = dialogue_info.get('scene_token')
-            if scene_token:
-                scene_tokens_dialogue.add(scene_token)
-
-        common_scene_tokens = scene_tokens_ann & scene_tokens_dialogue
-
-        combined_dict_cache = {}
-        for scene_token in common_scene_tokens:
-            combined_dict_cache[scene_token] = {}
-
-        for ann_info in ann_infos:
-            scene_token = ann_info.get('scene_token')
-            if scene_token in common_scene_tokens:
-                combined_dict_cache[scene_token].update(ann_info)
-
-        for dialogue_info in dialogue_infos:
-            scene_token = dialogue_info.get('scene_token')
-            if scene_token in common_scene_tokens:
-                combined_dict_cache[scene_token].update(dialogue_info)
-
-        for combined_dict in combined_dict_cache.values():
-            aligned_list.append(combined_dict)
-
-        aligned_infos['infos'] = aligned_list
-        return aligned_infos
-
-
-    def get_data_info(self, index):
-        info = self.aligned_infos['infos'][index]
+    def get_data_info(self, index, task=None, part=None):
+        scene_idx = index // 10
+        prompt_idx = index % 10
+        info = self.aligned_infos['infos'][scene_idx]
+        # info = self.aligned_infos['infos'][index]
 
         scene = info['scene_token']
         
         obj = scene.split('_', 1)[1]
-        try:
-            with open(f"/media/robot/data/WCL/taskgrasp/taskgrasp_image/scans/{scene}/prompt.pkl", "rb") as f:
-                prompts = pickle.load(f)
-                prompt = random.choice(prompts)
 
-        except Exception as e:
-            print(f"Error loading prompt for scene {scene}: {e}")
-            prompt = ["", "", "", ""]
-            obj_name_list = []
+        category_task = parse_txt_to_records(txt_path=f"{self.dataset_path}/scans/{scene}/task_category_related_infer.txt")
+        part_task = parse_txt_to_records(txt_path=f"{self.dataset_path}/scans/{scene}/task_part_related_infer.txt")
+        total_task = category_task + part_task
+        # prompt_idx = random.randint(0, 9)
+        if total_task[prompt_idx][-1].strip('.') == "None":
+            # return self.get_data_info((index + 1) % len(self))
+            grasp_part = "None"
+        else:
+            txt_part = total_task[prompt_idx][-1]
+            grasp_part = re.search(r'Grasp part:\s*([^;.]+)', txt_part).group(1).strip()
+
+        # try:
+        #     with open(f"/media/robot/data/WCL/taskgrasp/taskgrasp_image/scans/{scene}/prompt.pkl", "rb") as f:
+        #         prompts = pickle.load(f)
+        #         prompt = random.choice(prompts)
+
+        # except Exception as e:
+        #     print(f"Error loading prompt for scene {scene}: {e}")
+        #     prompt = ["", "", "", ""]
+        #     obj_name_list = []
+
+        if task is not None and part is not None:
+            total_task[prompt_idx][0] = task
+            grasp_part = part + '.'
+        
         print("scene:", scene)
-        print("task:", prompt[0])
-        print("part", prompt[3])
-        motion_attributes = read_move_attributes(f"{self.dataset_path}/task")
+        print("task:", total_task[prompt_idx][0])
+        print("part", grasp_part)
 
         pc_path = info['pc_path']
         img_path = info['img_path']
@@ -943,11 +908,11 @@ class GraspcotDataset_Test(Dataset):
         gs_prompts_list = info['gs_prompts']
         grasps = info['gs']
         gs_labels = info['gs_labels']
-        grasp_part = prompt[3][:-1]
+
 
         new_gs_labels = []
-        for part_name in gs_prompts_list[0]:
-            if part_name == grasp_part:
+        for idx, part_name in enumerate(gs_prompts_list[0]):
+            if part_name == grasp_part and total_task[prompt_idx][1].strip('.') in gs_prompts_list[1][idx]:
                 new_gs_labels.append(1)
             else:
                 new_gs_labels.append(0)
@@ -975,15 +940,11 @@ class GraspcotDataset_Test(Dataset):
         conversations = []
         mask_conversations = []
 
-        parts = read_object_part(f"{self.dataset_path}/scans/{scene}/object_part.txt")
-        part_attr = read_part_attributes(f"{self.dataset_path}/scans/{scene}/object_property.txt")
-        part_pro = ''
-        for index in range(len(part_attr)):
-            part_pro += part_attr[index]
-        
-        motion_definition = get_motion_definition(motion_attributes, prompt[1])
-        request_str = f"The task is: {prompt[0]} This task belongs to the motion primitive {prompt[1]} The definition of this motion primitive is: {motion_definition} According to <image>, the object in the image is {obj}, which consists of the following parts: {parts} The attributes of each part are: {part_pro} The part {prompt[3][:-1]} satisfies the task semantics and can execute the motion primitives to which the task belongs. There are several grasps on the object the {obj}. <grasp_feature>. Which grasps are on the part {prompt[3][:-1]}?"
+        txt_parts = read_object_part(f"{self.dataset_path}/scans/{scene}/object_part.txt")
+        # request_str = f"The task is: {prompt[0]} This task belongs to the motion primitive {prompt[1]} The definition of this motion primitive is: {motion_definition} According to <image>, the object in the image is {obj}, which consists of the following parts: {parts} The attributes of each part are: {part_pro} The part {prompt[3][:-1]} satisfies the task semantics and can execute the motion primitives to which the task belongs. There are several grasps on the object the {obj}. <grasp_feature>. Which grasps are on the part {prompt[3][:-1]}?"
         # request_str = f"The task is: {prompt[0]} This task belongs to the motion primitive {prompt[1]} The definition of this motion primitive is: {motion_definition} The object is {obj}, which consists of the following parts: {parts} The attributes of each part are: {part_pro} The part {prompt[3][:-1]} satisfies the task semantics and can execute the motion primitives to which the task belongs. There are several grasps on the object the {obj}. <grasp_feature>. Which grasps are on the part {prompt[3][:-1]}?"
+        request_str = f"Given <image>, the object in the image is {obj}, which consists of the following parts: {txt_parts}. There are 25 candidate grasps for the {obj}. <grasp_feature>. Which grasps are located on the {grasp_part}?"
+
 
         indices = torch.nonzero(gs_labels.squeeze(1)).squeeze(1).tolist()
         number_words = [number_model[idx] for idx in indices]
@@ -1009,8 +970,6 @@ class GraspcotDataset_Test(Dataset):
         query_list.append(request_str)
         response_list.append(response_str)
 
-
-        prompt.append(response_str)
 
         pos_grasps = []
         pos_gs_labels = []
@@ -1039,13 +998,12 @@ class GraspcotDataset_Test(Dataset):
         mask_data_dict = preprocess(mask_sources, tokenizer=self.tokenizer, has_image=True)
 
         input_ids = mask_data_dict["input_ids"][0]
+        # input_ids = data_dict["input_ids"][0]
         labels = data_dict["labels"][0]
 
         input_dict = dict(
             grasp_ids=pos_grasps,
-            correct_answer=prompt,
             input_ids=input_ids,
-            # input_ids_list=input_ids_list, # Added this
             questions=query_list, # Added this
             labels=labels,
             scene = scene,

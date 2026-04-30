@@ -213,9 +213,9 @@ def _fill_grasp_trainval_infos(version="train", pruning=False):
         misc_data = pickle.load(f)[0]
 
     id = 0 # glyou debug
-    task = task_classification()
+    # task = task_classification()
     if version == "train":
-        part_filenames = task["train_files"]
+        # part_filenames = task["train_files"]
         # class
         # train_data = read_data("/media/robot/data/WCL/taskgrasp/taskgrasp_image/splits_final/o/0/train_o.txt")
         # val_data  = read_data("/media/robot/data/WCL/taskgrasp/taskgrasp_image/splits_final/o/0/val_o.txt")
@@ -226,13 +226,13 @@ def _fill_grasp_trainval_infos(version="train", pruning=False):
         #         part_filenames.extend(misc_data[key])
         
         # instance
-        # train_data = read_data("/media/robot/data/WCL/taskgrasp/taskgrasp_image/splits_final/i/0/train_i.txt")
-        # val_data  = read_data("/media/robot/data/WCL/taskgrasp/taskgrasp_image/splits_final/i/0/val_i.txt")
-        # train_data = list(dict.fromkeys(train_data + val_data))
+        train_data = read_data("/media/robot/data/WCL/taskgrasp/taskgrasp_image/splits_final/i/0/train_i.txt")
+        val_data  = read_data("/media/robot/data/WCL/taskgrasp/taskgrasp_image/splits_final/i/0/val_i.txt")
+        train_data = list(dict.fromkeys(train_data + val_data))
 
-        # part_filenames = filenames[id*seperate_num:min((id+1)*seperate_num, int(len(filenames)*4/5))]   # 80% scenes for training
+        part_filenames = filenames[id*seperate_num:min((id+1)*seperate_num, int(len(filenames)*4/5))]   # 80% scenes for training
     else:
-        part_filenames = task["test_files"]
+        # part_filenames = task["test_files"]
         # class
         # test_data = read_data("/media/robot/data/WCL/taskgrasp/taskgrasp_image/splits_final/o/0/test_o.txt")
         # part_filenames = []
@@ -241,9 +241,9 @@ def _fill_grasp_trainval_infos(version="train", pruning=False):
         #         part_filenames.extend(misc_data[key])
 
         # instance
-        # test_data = read_data("/media/robot/data/WCL/taskgrasp/taskgrasp_image/splits_final/i/0/test_i.txt")
-        # part_filenames = test_data
-        # part_filenames = filenames[int(len(filenames)*4/5)+id*seperate_num:min(int(len(filenames)*4/5)+(id+1)*seperate_num, len(filenames))]   # 20% scenes for val
+        test_data = read_data("/media/robot/data/WCL/taskgrasp/taskgrasp_image/splits_final/i/0/test_i.txt")
+        part_filenames = test_data
+        part_filenames = filenames[int(len(filenames)*4/5)+id*seperate_num:min(int(len(filenames)*4/5)+(id+1)*seperate_num, len(filenames))]   # 20% scenes for val
     
     # Open3D Visualizer Setup
     vis = o3d.visualization.Visualizer()
@@ -525,8 +525,10 @@ def create_grasp_infos(root_path,
 
     print('{} sample: {}'.format(version, len(infos)))
     data = dict(infos=infos, metadata=metadata)
+    # info_path = osp.join(root_path,
+    #                         '{}_infos_{}_'.format(info_prefix, version)+str(id)+'_task'+'.pkl')
     info_path = osp.join(root_path,
-                            '{}_infos_{}_'.format(info_prefix, version)+str(id)+'_task'+'.pkl')
+                            '{}_infos_{}_'.format(info_prefix, version)+str(id)+'_instance' +'.pkl')
     dump(data, info_path)
     print('Finish {}_infos_{}_'.format(info_prefix, version)+str(id))
 
@@ -621,18 +623,18 @@ def task_classification():
     }
 
 if __name__ == '__main__':
-    # args = parse_args()
-    # create_grasp_infos("/media/robot/data/WCL/taskgrasp/taskgrasp_image/",
-    #                       "grasp_task",
-    #                       version=args.version,
-    #                       pruning=args.pruning,
-    #                       id=args.id)
+    args = parse_args()
+    create_grasp_infos("/media/robot/data/WCL/taskgrasp/taskgrasp_image/",
+                          "grasp_task",
+                          version=args.version,
+                          pruning=args.pruning,
+                          id=args.id)
     
-    task = task_classification()
+    # task = task_classification()
 
     # 将 task 字典保存为 pkl 文件
-    save_path = "/media/robot/data/WCL/taskgrasp/taskgrasp_image/task_classification.pkl"
-    with open(save_path, "wb") as f:
-        pickle.dump(task, f)
-    print(f"Task classification saved to {save_path}")
+    # save_path = "/media/robot/data/WCL/taskgrasp/taskgrasp_image/task_classification.pkl"
+    # with open(save_path, "wb") as f:
+    #     pickle.dump(task, f)
+    # print(f"Task classification saved to {save_path}")
 

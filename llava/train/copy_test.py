@@ -1,5 +1,6 @@
 import os
 import copy
+from click import prompt
 import torch
 import pickle
 import numpy as np
@@ -29,7 +30,7 @@ import mmengine
 import random
 from tqdm import tqdm
 from llava.train.image import Image
-from llava.train.llm import read_interaction_property, read_object_part, read_part_attributes
+from llava.train.llm import read_interaction_property, read_object_part, read_part_attributes, read_part, parse_txt_to_records
 
 from packaging import version
 
@@ -46,9 +47,17 @@ MAX_WIDTH = 0.202   # maximum width of gripper 2F-140
 img_w, img_h = 336, 336
 
 
-number_model = ["one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", \
-    "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen", "twenty", \
-    "twenty-one", "twenty-two", "twenty-three", "twenty-four", "twenty-five"]
+
+# number_model = ["one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", \
+#     "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen", "twenty", \
+#     "twenty-one", "twenty-two", "twenty-three", "twenty-four", "twenty-five"]
+number_model = [
+    "first", "second", "third", "fourth", "fifth",
+    "sixth", "seventh", "eighth", "ninth", "tenth",
+    "eleventh", "twelfth", "thirteenth", "fourteenth", "fifteenth",
+    "sixteenth", "seventeenth", "eighteenth", "nineteenth", "twentieth",
+    "twenty-first", "twenty-second", "twenty-third", "twenty-fourth", "twenty-fifth"
+]
 # number_model = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", \
 #                 "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", \
 #                 "21", "22", "23", "24", "25"]
@@ -162,6 +171,38 @@ def preprocess_multimodal(
             sentence["value"] = sentence["value"].replace(DEFAULT_IMAGE_TOKEN, replace_token)
     return sources
     
+
+def preprocess_multimodal_unchanged(
+    sources: Sequence[str],
+    is_multimodal: bool = False,
+    mm_use_im_start_end: bool = False
+) -> Dict:
+    # is_multimodal = data_args.is_multimodal
+    if not is_multimodal:
+        return sources
+
+    for source in sources:
+        for sentence in source:
+            if DEFAULT_IMAGE_TOKEN in sentence['value'] or DEFAULT_VIDEO_TOKEN in sentence['value']:
+                sentence['value'] = sentence['value'].replace(DEFAULT_VIDEO_TOKEN, DEFAULT_IMAGE_TOKEN)
+                # sentence['value'] = sentence['value'].replace(DEFAULT_IMAGE_TOKEN, '').strip()
+                # sentence['value'] = DEFAULT_IMAGE_TOKEN + '\n' + sentence['value']
+                # sentence['value'] = sentence['value'].strip()
+                sentence['value'] = sentence['value'].replace(DEFAULT_IMAGE_TOKEN, DEFAULT_IMAGE_TOKEN)
+                if "mmtag" in conversation_lib.default_conversation.version:
+                    sentence['value'] = sentence['value'].replace(DEFAULT_IMAGE_TOKEN, '<Image>' + DEFAULT_IMAGE_TOKEN + '</Image>')
+            if DEFAULT_GRASP_FEATURE_TOKEN in sentence['value']:
+                # sentence['value'] = sentence['value'].replace(DEFAULT_GRASP_FEATURE_TOKEN, '').strip()
+                # sentence['value'] = DEFAULT_GRASP_FEATURE_TOKEN + '\n' + sentence['value']
+                # sentence['value'] = sentence['value'].strip()
+                sentence['value'] = sentence['value'].replace(DEFAULT_GRASP_FEATURE_TOKEN, DEFAULT_GRASP_FEATURE_TOKEN)
+            # Here we replace the <video> token with <image> token to reduce the coding 
+            replace_token, video_replace_token = DEFAULT_IMAGE_TOKEN, DEFAULT_IMAGE_TOKEN
+            if mm_use_im_start_end: # false
+                replace_token = DEFAULT_IM_START_TOKEN + replace_token + DEFAULT_IM_END_TOKEN
+            sentence["value"] = sentence["value"].replace(DEFAULT_IMAGE_TOKEN, replace_token)
+    return sources
+
 
 def preprocess_target_prompts(
     sources: Sequence[str],
@@ -550,6 +591,34 @@ def mask_text_llava_compatible(text, tokenizer):
     
     return masked_text
 
+def get_motion_definition(motion_attributes: List[str], motion_name: str) -> Optional[str]:
+    """
+    从 motion_attributes (每个元素形如 'Name:Definition...') 中，
+    根据 motion_name (如 'Pour.' / 'Surface Slide.') 找到对应的定义并返回。
+    找不到则返回 None。
+    """
+    if not motion_name:
+        return None
+
+    # 规范化：去空格、去末尾句号、统一大小写
+    def norm(s: str) -> str:
+        s = s.strip()
+        s = re.sub(r"\.+$", "", s)   # 去掉末尾一个或多个 '.'
+        s = re.sub(r"\s+", " ", s)   # 合并多余空格
+        return s.lower()
+
+    target = norm(motion_name)
+
+    for line in motion_attributes:
+        if not line or ":" not in line:
+            continue
+
+        name_part, definition_part = line.split(":", 1)
+        if norm(name_part) == target:
+            return definition_part.strip()
+
+    return None
+
 class GraspcotDataset_Train(Dataset):
     """
     Data loading class for training.
@@ -564,20 +633,15 @@ class GraspcotDataset_Train(Dataset):
         self.tokenizer = tokenizer
         # self.ann_file = [f"data/grasp_anything/grasp_anything_infos_train_{str(i)}.pkl" for i in range(8)]
         # self.dialogue_file = ["data/grasp_anything/dialogues/dialogue_infos_train_all.pkl"]
-        self.ann_file = [f"/Data/wucl/taskgrasp_image/grasp_task_infos_train_0_task.pkl"]
-        self.task_file = [f"/Data/wucl/taskgrasp_image/task_classification.pkl"]
+        self.ann_file = [f"/Data/wucl/taskgrasp_image/grasp_task_infos_train_0_class.pkl"]
         # self._load()
         self.aligned_infos = self.load_annotations(self.ann_file)
-        self.task_infos = self.load_annotations(self.task_file)
 
         # self.dialogue_infos = self.load_annotations(self.dialogue_file)
         # self.aligned_infos = self.align_annotations()
         # print(len(self.aligned_infos['infos']))
         # self.visualize_pc_data()
-        self.current_epoch = 0
 
-    def set_epoch(self, epoch):
-        self.current_epoch = epoch
 
     def load_annotations(self, ann_file_list):
         """Load annotations from ann_file.
@@ -597,61 +661,71 @@ class GraspcotDataset_Train(Dataset):
                 tmp_data = mmengine.load(ann_file, file_format='pkl')
                 data_infos['infos'] += tmp_data['infos']
         return data_infos
-    
-    def find_index(self, scene):
-        for i, info in enumerate(self.aligned_infos['infos']):
-            if info['scene_token']==scene:
-                return i
-        return -1
 
     def get_data_info(self, index):
-        # scene_idx = index // 4
-        # prompt_idx = index % 4
-        # info = self.aligned_infos['infos'][scene_idx]
-        task_info = self.task_infos['train_tasks_all'][index]
-        scene_idx = self.find_index(task_info[-2])
+        scene_idx = index // 10
+        prompt_idx = index % 10
         info = self.aligned_infos['infos'][scene_idx]
+        # info = self.aligned_infos['infos'][index]
         
         scene = info['scene_token']
         obj = scene.split('_', 1)[1]
-        try:
-            prompt = task_info[0:4]
-            # with open(f"/Data/wucl/taskgrasp_image/scans/{scene}/prompt.pkl", "rb") as f:
-            #     prompts = pickle.load(f)
-            #     # prompt = random.choice(prompts)
-            #     prompt = prompts[prompt_idx]
+        category_task = parse_txt_to_records(txt_path=f"{self.dataset_path}/scans/{scene}/task_category_related_infer.txt")
+        part_task = parse_txt_to_records(txt_path=f"{self.dataset_path}/scans/{scene}/task_part_related_infer.txt")
+        total_task = category_task + part_task
 
-        except Exception as e:
-            print(f"Error loading prompt for scene {scene}: {e}")
-            prompt = ["", "", "", ""]
-            obj_name_list = []
-        
-        interaction_proerty = read_interaction_property(f"{self.dataset_path}/task")
+        if total_task[prompt_idx][-1].strip('.') == "None":
+            # return self.get_data_info((index + 1) % len(self))
+            grasp_part = "None"
+        else:
+            txt_part = total_task[prompt_idx][-1]
+            grasp_part = re.search(r'Grasp part:\s*([^;.]+)', txt_part).group(1).strip()
+
+
+        # try:
+        #     with open(f"{self.dataset_path}/scans/{scene}/prompt.pkl", "rb") as f:
+        #         prompts = pickle.load(f)
+        #         prompt = prompts[prompt_idx]
+
+        # except Exception as e:
+        #     print(f"Error loading prompt for scene {scene}: {e}")
+        #     prompt = ["", "", "", ""]
+        #     obj_name_list = []
+
+        txt_parts = read_object_part(f"{self.dataset_path}/scans/{scene}/object_part.txt")
+        # parts = read_part(f"{self.dataset_path}/scans/{scene}/object_part.txt")
+        # grasp_part = random.choice(parts)
 
         pc_path = info['pc_path']
         img_path = info['img_path']
         depth_path = info['depth_path']
-        if prompt[3].strip('.') == "None":
-            grasp_part = "None"
-            functional_part = "None"
-        else:
-            grasp_part = re.search(r'Grasp part:\s*([^;.]+)', prompt[3]).group(1).strip()
-            functional_part = re.search(r'Functional part:\s*([^;.]+)', prompt[3]).group(1).strip()
 
         ext = torch.from_numpy(info['pose']).to(torch.bfloat16)
         intrinsic = torch.from_numpy(info['intrinsic']).to(torch.bfloat16)
 
         gs_prompts_list = info['gs_prompts']
 
+        # new_gs_labels = []
+        # for part_name in gs_prompts_list[0]:
+        #     if part_name == grasp_part:
+        #         new_gs_labels.append(1)
+        #     else:
+        #         new_gs_labels.append(0) 
+
         new_gs_labels = []
         for idx, part_name in enumerate(gs_prompts_list[0]):
-            if part_name == grasp_part and prompt[1].strip('.') in gs_prompts_list[1][idx]:
+            if part_name == grasp_part and total_task[prompt_idx][1].strip('.') in gs_prompts_list[1][idx]:
                 new_gs_labels.append(1)
             else:
                 new_gs_labels.append(0)
 
         grasps = info['gs']
         gs_labels = torch.tensor(new_gs_labels, dtype=torch.int64).unsqueeze(1)
+        N = gs_labels.shape[0]
+        idx = torch.randint(0, N, (1,)).item()
+        gs_labels = gs_labels[idx:idx+1, :]
+        grasps = [grasps[0][idx:idx+1, :, :].reshape(6,3)]
+
         # print(gs_labels.shape, len(grasps))
         # gs_labels = info['gs_labels']
 
@@ -671,9 +745,23 @@ class GraspcotDataset_Train(Dataset):
         
         conversations = []
         mask_conversations = []
+
         
-        request_str = f"15 Interaction Properties are defined as follows: {' '.join(interaction_proerty)}. The task is: {prompt[0]}. Which type of Interaction Property does the task belong to?"
-        response_str = f"{prompt[1]}"
+        # motion_definition = get_motion_definition(motion_attributes, prompt[1])
+        # request_str = f"The task is: {prompt[0]} This task belongs to the motion primitive {prompt[1]} The definition of this motion primitive is: {motion_definition} According to <image>, the object in the image is {obj}, which consists of the following parts: {parts} The attributes of each part are: {part_pro} The part {prompt[3][:-1]} satisfies the task semantics and can execute the motion primitives to which the task belongs. There are several grasps on the object the {obj}. <grasp_feature>. Which grasps are on the part {prompt[3][:-1]}?"
+        # request_str = f"According to <image>, the object in the image is {obj}, which consists of the following parts: {parts}. There are several grasps on the object the {obj}. <grasp_feature>. Which grasps are on the {grasp_part} part?"
+        request_str = f"Given <image>, the object in the image is {obj}, which consists of the following parts: {txt_parts}. There are 25 candidate grasps for the {obj}. <grasp_feature>. Which grasps are located on the {grasp_part}?"
+
+        indices = torch.nonzero(gs_labels.squeeze(1)).squeeze(1).tolist()
+        number_words = [number_model[idx] for idx in indices]
+        # Use "," instead of ", " to avoid tokenization mismatch (24 tokens diff for 25 items)
+        number_words = [w.replace("\u200b","").strip() for w in number_words]
+        response_str = ",".join(number_words)
+        if response_str == "":
+            response_str = "None."
+        else:
+            response_str += "."
+
         mask_response_str = mask_text_llava_compatible(response_str, self.tokenizer)
         request = {
             "from": "human",
@@ -688,90 +776,6 @@ class GraspcotDataset_Train(Dataset):
         query_list.append(request_str)
         response_list.append(response_str)
         
-
-        parts = read_object_part(f"{self.dataset_path}/scans/{scene}/object_part.txt")
-        part_attr = read_part_attributes(f"{self.dataset_path}/scans/{scene}/object_property.txt")
-        # request_str = "<image>" + f"The tool object in the image is {obj}. The parts of the tool object and their attributes are: {part_attr}. Based on the task semantics and interaction property {prompt[1]}, infer the necessary physical properties only from: Material (e.g., rigid, soft, brittle, elastic, stiff, compliant), Surface (e.g., smooth, sharp, rough, rounded-edged, matte), Geometric Structure (e.g., rectangular prism-like, elongated and straight, short cylindrical, concave, flat, elongated and curved, hook-shaped, conical), and Topological Structure (e.g., solid, hollow, perforated, through-hole, cavity, slotted, grooved, looped, hinged, jaw-like)."
-        request_str = f"Based on the task semantics and the inferred interaction property, infer the necessary physical properties."
-
-        # Dynamic Mixing Strategy
-        use_supervised = True
-        if self.current_epoch < 15: 
-            # First 20 epoch fully supervised
-            use_supervised = True
-        else:
-            # Alternate every 5 epochs
-            cycle_idx = (self.current_epoch - 15) // 5
-            if cycle_idx % 2 == 0:
-                use_supervised = False # 15-19 Unsupervised
-            else:
-                use_supervised = True  # 20-24 Supervised
-            
-        if use_supervised:
-            # Supervised (Ground Truth)
-            response_str = f"{prompt[2]}"
-            mask_response_str = mask_text_llava_compatible(response_str, self.tokenizer)
-        else:
-            # Unsupervised (Latent Exploration)
-            response_str = "<unsupervised>" * 30
-            mask_response_str = response_str
-
-        # response_str = f"{prompt[2]}"
-        # mask_response_str = mask_text_llava_compatible(response_str, self.tokenizer)
-        request = {
-            "from": "human",
-            "value": request_str
-        }
-        response = {
-            "from": "gpt",
-            "value": response_str
-        }
-        conversations += [request, response]
-        mask_conversations += [request, {"from": "gpt", "value": mask_response_str}]
-        query_list.append(request_str)
-        response_list.append(response_str)
-
-
-        # request_str = f"Does the object have any part that meet the task requirements? If not, answer None."
-        # request_str = "<image>" + f"The tool object in the image is {obj}. The parts of the tool object and their attributes are: {part_attr}. Which part of the tool object has physical properties that satisfy these requirements? If no part satisfies them, answer None."
-        if use_supervised:
-            request_str = "<image>" + f"The tool object in the image is {obj}. The parts of the tool object and their attributes are: {part_attr}. Which part of the tool object matches the necessary physical properties inferred above and should be selected as the functional part for this task? If no part matches, answer None."
-        else:
-            request_str = "<image>" + f"The necessary physical properties are {prompt[2]}. The tool object in the image is {obj}. The parts of the tool object and their attributes are: {part_attr}. Which part of the tool object matches the necessary physical properties inferred above and should be selected as the functional part for this task? If no part matches, answer None."
-
-        response_str = f"{functional_part}" + '.'
-        mask_response_str = mask_text_llava_compatible(response_str, self.tokenizer)
-        request = {
-            "from": "human",
-            "value": request_str
-        }
-        response = {
-            "from": "gpt",
-            "value": response_str
-        }
-        conversation = [request, response]
-        conversations += conversation
-        mask_conversations += [request, {"from": "gpt", "value": mask_response_str}]
-        query_list.append(request_str)
-        response_list.append(response_str)
-
-        # request_str = f"The function part is {functional_part}. Which part should be used as the grasp part for this task? If the functional part is None, answer None."
-        request_str = f"Based on the functional part inferred above, determine which part of the tool object should be used as the grasp part for this task. If the inferred functional part is None, answer None."
-        response_str = f"{grasp_part}" + '.'
-        mask_response_str = mask_text_llava_compatible(response_str, self.tokenizer)
-        request = {
-            "from": "human",
-            "value": request_str
-        }
-        response = {
-            "from": "gpt",
-            "value": response_str
-        }
-        conversation = [request, response]
-        conversations += conversation
-        mask_conversations += [request, {"from": "gpt", "value": mask_response_str}]
-        query_list.append(request_str)
-        response_list.append(response_str)
 
         pos_grasps = []
         pos_gs_labels = []
@@ -786,11 +790,11 @@ class GraspcotDataset_Train(Dataset):
         pos_gs_label = torch.cat(pos_gs_labels, dim=0)
 
 
-        sources = preprocess_multimodal(
+        sources = preprocess_multimodal_unchanged(
             copy.deepcopy([conversations]),
             is_multimodal=True)
 
-        mask_sources = preprocess_multimodal(
+        mask_sources = preprocess_multimodal_unchanged(
             copy.deepcopy([mask_conversations]),
             is_multimodal=True)
 
@@ -827,8 +831,7 @@ class GraspcotDataset_Train(Dataset):
         return data_dict
 
     def __len__(self):
-        # return len(self.aligned_infos['infos']) * 15
-        return len(self.task_infos['train_tasks_all'])
+        return len(self.aligned_infos['infos']) * 10
     
 
 class GraspcotDataset_Test(Dataset):
@@ -844,21 +847,13 @@ class GraspcotDataset_Test(Dataset):
         
         self.tokenizer = tokenizer
         
-        self.ann_file = [f"/Data/wucl/taskgrasp_image/grasp_task_infos_test_0_task.pkl"]
-        self.task_file = [f"/Data/wucl/taskgrasp_image/task_classification.pkl"]
+        self.ann_file = [f"/Data/wucl/taskgrasp_image/grasp_task_infos_test_0_class.pkl"]
         # self.dialogue_file = ["data/grasp_anything/dialogues/dialogue_infos_val_all.pkl"]
         
         self.aligned_infos = self.load_annotations(self.ann_file)
-        self.task_infos = self.load_annotations(self.task_file)
-
         # self.dialogue_infos = self.load_annotations(self.dialogue_file)
         # self.aligned_infos = self.align_annotations()
-
-    def find_index(self, scene):
-        for i, info in enumerate(self.aligned_infos['infos']):
-            if info['scene_token']==scene:
-                return i
-        return -1
+    
 
     def load_annotations(self, ann_file_list):
         """Load annotations from ann_file.
@@ -879,33 +874,53 @@ class GraspcotDataset_Test(Dataset):
                 data_infos['infos'] += tmp_data['infos']
         return data_infos
 
+    def get_obj_task(self, obj):
+        for index in range(len(self.aligned_infos['infos'])):
+            info = self.aligned_infos['infos'][index]
+            if info['scene_token'] == obj:
+                return index
 
-    def get_data_info(self, index, task=None):
-        # info = self.aligned_infos['infos'][index]
-        task_info = self.task_infos['test_irrelevant_tasks'][index]
-        scene_idx = self.find_index(task_info[-2])
+
+    def get_data_info(self, index, task=None, part=None):
+        scene_idx = index // 10
+        prompt_idx = index % 10
         info = self.aligned_infos['infos'][scene_idx]
+        # info = self.aligned_infos['infos'][index]
 
         scene = info['scene_token']
         
         obj = scene.split('_', 1)[1]
-        try:
-            prompt = task_info[0:4]
+
+        category_task = parse_txt_to_records(txt_path=f"{self.dataset_path}/scans/{scene}/task_category_related_infer.txt")
+        part_task = parse_txt_to_records(txt_path=f"{self.dataset_path}/scans/{scene}/task_part_related_infer.txt")
+        total_task = category_task + part_task
+        # prompt_idx = random.randint(0, 9)
+        if total_task[prompt_idx][-1].strip('.') == "None":
+            # return self.get_data_info((index + 1) % len(self))
+            grasp_part = "None"
+        else:
+            txt_part = total_task[prompt_idx][-1]
+            grasp_part = re.search(r'Grasp part:\s*([^;.]+)', txt_part).group(1).strip()
+
+
+        # try:
         #     with open(f"/Data/wucl/taskgrasp_image/scans/{scene}/prompt.pkl", "rb") as f:
         #         prompts = pickle.load(f)
         #         prompt = random.choice(prompts)
-        except Exception as e:
-            print(f"Error loading prompt for scene {scene}: {e}")
-            prompt = ["", "", "", ""]
-            obj_name_list = []
 
-        # print("scene:", scene)
-        # print("task:", prompt[0])
-        # print("part", prompt[3])
-        interaction_proerty = read_interaction_property(f"{self.dataset_path}/task")
+        # except Exception as e:
+        #     print(f"Error loading prompt for scene {scene}: {e}")
+        #     prompt = ["", "", "", ""]
+        #     obj_name_list = []
 
-        if task is not None:
-            prompt[0] = task
+        if task is not None and part is not None:
+            total_task[prompt_idx][0] = task
+            grasp_part = part + '.'
+
+        print("scene:", scene)
+        print("task:", total_task[prompt_idx][0])
+        print("part", grasp_part)
+
         pc_path = info['pc_path']
         img_path = info['img_path']
         depth_path = info['depth_path']
@@ -917,21 +932,27 @@ class GraspcotDataset_Test(Dataset):
         grasps = info['gs']
         gs_labels = info['gs_labels']
 
-        if prompt[3].strip('.') == "None":
-            grasp_part = "None"
-            functional_part = "None"
-        else:
-            grasp_part = re.search(r'Grasp part:\s*([^;.]+)', prompt[3]).group(1).strip()
-            functional_part = re.search(r'Functional part:\s*([^;.]+)', prompt[3]).group(1).strip()
+        # new_gs_labels = []
+        # for part_name in gs_prompts_list[0]:
+        #     if part_name == grasp_part:
+        #         new_gs_labels.append(1)
+        #     else:
+        #         new_gs_labels.append(0)
 
         new_gs_labels = []
         for idx, part_name in enumerate(gs_prompts_list[0]):
-            if part_name == grasp_part and prompt[1].strip('.') in gs_prompts_list[1][idx]:
+            if part_name == grasp_part and total_task[prompt_idx][1].strip('.') in gs_prompts_list[1][idx]:
                 new_gs_labels.append(1)
             else:
                 new_gs_labels.append(0)
 
+
         gs_labels = torch.tensor(new_gs_labels, dtype=torch.int64).unsqueeze(1)
+        # N = gs_labels.shape[0]
+        # idx = torch.randint(0, N, (1,)).item()
+        # gs_labels = gs_labels[idx:idx+1, :]
+        # grasps = [grasps[0][idx:idx+1, :, :].reshape(6,3)]
+
 
         pc = np.load(f"{self.dataset_path}/scans/{scene}/down_pc_4096.npy")
         pc = torch.from_numpy(pc).to(torch.float32)
@@ -949,12 +970,27 @@ class GraspcotDataset_Test(Dataset):
         conversations = []
         mask_conversations = []
 
-        request_str_1 =  f"15 Interaction Properties are defined as follows: {' '.join(interaction_proerty)}. The task is: {prompt[0]}. Which type of Interaction Property does the task belong to?"
-        response_str = f"{prompt[1]}"
+        txt_parts = read_object_part(f"{self.dataset_path}/scans/{scene}/object_part.txt")
+        
+
+        # request_str = f"The task is: {prompt[0]} This task belongs to the motion primitive {prompt[1]} The definition of this motion primitive is: {motion_definition} According to <image>, the object in the image is {obj}, which consists of the following parts: {parts} The attributes of each part are: {part_pro} The part {prompt[3][:-1]} satisfies the task semantics and can execute the motion primitives to which the task belongs. There are several grasps on the object the {obj}. <grasp_feature>. Which grasps are on the part {prompt[3][:-1]}?"
+        # request_str = f"The task is: {prompt[0]} This task belongs to the motion primitive {prompt[1]} The definition of this motion primitive is: {motion_definition} The object is {obj}, which consists of the following parts: {parts} The attributes of each part are: {part_pro} The part {prompt[3][:-1]} satisfies the task semantics and can execute the motion primitives to which the task belongs. There are several grasps on the object the {obj}. <grasp_feature>. Which grasps are on the part {prompt[3][:-1]}?"
+        request_str = f"Given <image>, the object in the image is {obj}, which consists of the following parts: {txt_parts}. There are 25 candidate grasps for the {obj}. <grasp_feature>. Which grasps are located on the {grasp_part}?"
+
+        indices = torch.nonzero(gs_labels.squeeze(1)).squeeze(1).tolist()
+        number_words = [number_model[idx] for idx in indices]
+        # Use "," instead of ", " to avoid tokenization mismatch (24 tokens diff for 25 items)
+        number_words = [w.replace("\u200b","").strip() for w in number_words]
+        response_str = ",".join(number_words)
+        if response_str == "":
+            response_str = "None."
+        else:
+            response_str += "."
+
         mask_response_str = mask_text_llava_compatible(response_str, self.tokenizer)
         request = {
             "from": "human",
-            "value": request_str_1
+            "value": request_str
         }
         response = {
             "from": "gpt",
@@ -962,91 +998,9 @@ class GraspcotDataset_Test(Dataset):
         }
         conversations += [request, response]
         mask_conversations += [request, {"from": "gpt", "value": mask_response_str}]
-        query_list.append(request_str_1)
+        query_list.append(request_str)
         response_list.append(response_str)
 
-        parts = read_object_part(f"{self.dataset_path}/scans/{scene}/object_part.txt")
-        part_attr = read_part_attributes(f"{self.dataset_path}/scans/{scene}/object_property.txt")
-        request_str_2 = f"Based on the task semantics and the inferred interaction property, infer the necessary physical properties."
-        # response_str = "<unsupervised>" * 30
-        response_str = f"{prompt[2]}"
-        mask_response_str = mask_text_llava_compatible(response_str, self.tokenizer)
-        request = {
-            "from": "human",
-            "value": request_str_2
-        }
-        response = {
-            "from": "gpt",
-            "value": response_str
-        }
-        conversations += [request, response]
-        mask_conversations += [request, {"from": "gpt", "value": mask_response_str}]
-        query_list.append(request_str_2)
-        response_list.append(response_str)
-
-
-        request_str_3 = "<image>" + f"The tool object in the image is {obj}. The parts of the tool object and their attributes are: {part_attr}. Which part of the tool object matches the necessary physical properties inferred above and should be selected as the functional part for this task? If no part matches, answer None."
-        response_str = f"{functional_part}" + '.'
-        mask_response_str = mask_text_llava_compatible(response_str, self.tokenizer)
-        request = {
-            "from": "human",
-            "value": request_str_3
-        }
-        response = {
-            "from": "gpt",
-            "value": response_str
-        }
-        conversation = [request, response]
-        conversations += conversation
-        mask_conversations += [request, {"from": "gpt", "value": mask_response_str}]
-        query_list.append(request_str_3)
-        response_list.append(response_str)
-
-
-        request_str_4 = f"Based on the functional part inferred above, determine which part of the tool object should be used as the grasp part for this task. If the inferred functional part is None, answer None."
-        response_str = f"{grasp_part}" + '.'
-        mask_response_str = mask_text_llava_compatible(response_str, self.tokenizer)
-        request = {
-            "from": "human",
-            "value": request_str_4
-        }
-        response = {
-            "from": "gpt",
-            "value": response_str
-        }
-        conversation = [request, response]
-        conversations += conversation
-        mask_conversations += [request, {"from": "gpt", "value": mask_response_str}]
-        query_list.append(request_str_4)
-        response_list.append(response_str)
-
-
-        # request_str_4 = "<grasp_feature>" + f"Which grasps are on this part?"
-
-        # indices = torch.nonzero(gs_labels.squeeze(1)).squeeze(1).tolist()
-        # number_words = [number_model[idx] for idx in indices]
-        # # Use "," instead of ", " to avoid tokenization mismatch (24 tokens diff for 25 items)
-        # number_words = [w.replace("\u200b","").strip() for w in number_words]
-        # response_str = ",".join(number_words)
-        # if response_str == "":
-        #     response_str = "None"
-
-        # mask_response_str = mask_text_llava_compatible(response_str, self.tokenizer)
-        # request = {
-        #     "from": "human",
-        #     "value": request_str_4
-        # }
-        # response = {
-        #     "from": "gpt",
-        #     "value": response_str
-        # }
-        # conversations += [request, response]
-        # mask_conversations += [request, {"from": "gpt", "value": mask_response_str}]
-        # query_list.append(request_str_4)
-        # response_list.append(response_str)
-
-
-        # prompt.append(response_str)
 
         pos_grasps = []
         pos_gs_labels = []
@@ -1060,30 +1014,27 @@ class GraspcotDataset_Test(Dataset):
         pos_gs_label = torch.cat(pos_gs_labels, dim=0)
 
         # query_list = [request_str_1, request_str_2, request_str_3, request_str_4]
-        query_list = [request_str_1, request_str_2, request_str_3, request_str_4]
+        # query_list = [request_str_1, request_str_2, request_str_3]
+        query_list = [request_str]
 
-        sources = preprocess_multimodal(
+        sources = preprocess_multimodal_unchanged(
             copy.deepcopy([conversations]),
             is_multimodal=True)
 
-        mask_sources = preprocess_multimodal(
+        mask_sources = preprocess_multimodal_unchanged(
             copy.deepcopy([mask_conversations]),
             is_multimodal=True)
 
         data_dict = preprocess(sources, tokenizer=self.tokenizer, has_image=True)
         mask_data_dict = preprocess(mask_sources, tokenizer=self.tokenizer, has_image=True)
 
+        # input_ids = mask_data_dict["input_ids"][0]
         input_ids = data_dict["input_ids"][0]
         labels = data_dict["labels"][0]
 
-        prompt[-1] = functional_part
-        prompt.append(grasp_part)
-
         input_dict = dict(
             grasp_ids=pos_grasps,
-            correct_answer=prompt,
             input_ids=input_ids,
-            # input_ids_list=input_ids_list, # Added this
             questions=query_list, # Added this
             labels=labels,
             scene = scene,
@@ -1107,7 +1058,7 @@ class GraspcotDataset_Test(Dataset):
         return data_dict
 
     def __len__(self):
-        return len(self.task_infos['test_irrelevant_tasks'])
+        return len(self.aligned_infos['infos']) * 10
 
 
 tokenizer = transformers.AutoTokenizer.from_pretrained(
