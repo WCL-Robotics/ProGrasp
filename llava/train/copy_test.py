@@ -1,1073 +1,426 @@
-import os
-import copy
-from click import prompt
+import argparse
 import torch
-import pickle
 import numpy as np
-import re
-import pickle
+from llava.model.builder import load_pretrained_grasp_model
+from llava.utils import disable_torch_init
+from llava.mm_utils import (
+    get_model_name_from_path,
+    tokenizer_image_token,
+    tokenizer_special_token_v2
+)
+from llava.constants import IMAGE_TOKEN_INDEX
 
-from torch.utils.data import Dataset
+# from llava.train.GraspcotDataset import GraspcotDataset_Test
+# from llava.train.Graspcot_Task_Dataset import GraspcotDataset_Test
+from llava.train.Graspcot_Grasp_Dataset import GraspcotDataset_Test
+from llava.train.train import DataCollatorForSupervisedDataset
 
-from pytorchse3.se3 import se3_log_map, se3_exp_map
+from PIL import Image
 
-from llava.constants import (IGNORE_INDEX, IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_TOKEN, DEFAULT_IM_START_TOKEN, 
-                             DEFAULT_IM_END_TOKEN, DEFAULT_VIDEO_TOKEN, DEFAULT_IMAGE_PATCH_TOKEN,
-                             GRASP_Feature_TOKEN_INDEX, DEFAULT_GRASP_FEATURE_TOKEN,
-                             DEFAULT_VID_START_TOKEN, DEFAULT_VIDEO_PATCH_TOKEN, DEFAULT_VID_END_TOKEN,
-                             DEFAULT_LOC_START_TOKEN, DEFAULT_LOC_END_TOKEN, DEFAULT_BOX_TOKEN,
-                             UNSUPERVISED_TOKEN_INDEX, DEFAULT_UNSUPERVISED_TOKEN, TEPORARY_IGNORE_INDEX)
-
-from llava import conversation as conversation_lib
-from llava.model import *
-from llava.mm_utils import tokenizer_image_token, map_obj, PlainBoxFormatter, tokenizer_special_token_v2
-
-from typing import Dict, Optional, Sequence, List
+import requests
+from PIL import Image
+from io import BytesIO
 import transformers
-import tokenizers
+from typing import Dict
 
-import mmengine
-import random
+import os
+import pickle
 from tqdm import tqdm
-from llava.train.image import Image
-from llava.train.llm import read_interaction_property, read_object_part, read_part_attributes, read_part, parse_txt_to_records
 
-from packaging import version
-
-import open3d as o3d
-
-import trimesh.transformations as tra
-
-
-IS_TOKENIZER_GREATER_THAN_0_14 = version.parse(tokenizers.__version__) >= version.parse('0.14')
-
-
-MAX_WIDTH = 0.202   # maximum width of gripper 2F-140
-
-img_w, img_h = 336, 336
+import random
+from llava import conversation as conversation_lib
+import time
+import gc
+from collections import defaultdict
+from sklearn.metrics import average_precision_score
 
 
 
-# number_model = ["one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", \
-#     "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen", "twenty", \
-#     "twenty-one", "twenty-two", "twenty-three", "twenty-four", "twenty-five"]
-number_model = [
-    "first", "second", "third", "fourth", "fifth",
-    "sixth", "seventh", "eighth", "ninth", "tenth",
-    "eleventh", "twelfth", "thirteenth", "fourteenth", "fifteenth",
-    "sixteenth", "seventeenth", "eighteenth", "nineteenth", "twentieth",
-    "twenty-first", "twenty-second", "twenty-third", "twenty-fourth", "twenty-fifth"
-]
-# number_model = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", \
-#                 "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", \
-#                 "21", "22", "23", "24", "25"]
+# def precess_data(tokenizer, instance):
 
+#     # input_ids = tuple(instance[key] for key in ("input_ids"))
+#     # input_ids = input_ids.unsqueeze(0).cuda()
+#     # labels = labels.unsqueeze(0).cuda() 
+#     # input_ids = input_ids[:, :tokenizer.model_max_length]
+#     # labels = labels[:, :tokenizer.model_max_length]
+#     batch = dict()
+    
+#     # ==========Too many videos or images may lead to OOM, so we encode them one by one======================
+#     if 'image' in instance:
+#         images = instance["image"].unsqueeze(0).to(torch.bfloat16).cuda()
+#         batch['images'] = images  # (B, V, H, W)
+#     if 'grasps' in instance:
+#         grasps = instance["grasps"].unsqueeze(0).to(torch.bfloat16).cuda()
+#         batch['gs'] = grasps  # (B, N, 7)
 
-def get_rgb(rgb_file_path, rot=0, zoom=1.0, normalise=True):
+#     if 'depth' in instance:
+#         depths = instance["depth"].unsqueeze(0).to(torch.bfloat16).cuda()
+#         poses = instance["pose"].unsqueeze(0).to(torch.bfloat16).cuda()
+#         correct_answers = instance["correct_answer"]
 
-    rgb_img = Image.from_file(rgb_file_path) # 0-255
-    # import matplotlib.pyplot as plt
-    # plt.imsave(f'image_{i}.png', image)
-    # Jacquard try
-    rgb_img.rotate(rot)
-    rgb_img.zoom(zoom)
-    rgb_img.resize((img_w, img_h))
-    if normalise:
-        rgb_img.normalise() # 255 到-1~1
-        rgb_img.img = rgb_img.img.transpose((2, 0, 1))
-    return rgb_img.img
+#         intrinsics = instance["intrinsic"].unsqueeze(0).to(torch.bfloat16).cuda()
+        
+#         batch['depths'] = depths  # (B, V, H, W)
+#         batch['poses'] = poses  # (B, V, 4, 4)
+#         batch['intrinsics'] = intrinsics  # (B, 4, 4)
+#         batch['correct_answers'] = correct_answers
 
-def add_period(sentence):
-    punctuation_marks = ['.', '?', '!']
-    if sentence and sentence[-1] not in punctuation_marks:
-        sentence += '.'
-    return sentence
+#         # batch['clicks'] = clicks  # (num_clicks, 3)
+#     if 'pure_img' in instance:
+#         pure_imgs = instance["pure_img"].unsqueeze(0).to(torch.bfloat16).cuda()
+#         batch['pure_imgs'] = pure_imgs # (B, 3, 168, 168)
+#     return batch
 
-def _tokenize_fn(strings: Sequence[str],
-                 tokenizer: transformers.PreTrainedTokenizer) -> Dict:
-    """Tokenize a list of strings."""
-    tokenized_list = [
-        tokenizer(
-            text,
-            return_tensors="pt",
-            padding="longest",
-            max_length=tokenizer.model_max_length,
-            truncation=True,
-        ) for text in strings
-    ]
-    input_ids = labels = [
-        tokenized.input_ids[0] for tokenized in tokenized_list
-    ]
-    input_ids_lens = labels_lens = [
-        tokenized.input_ids.ne(tokenizer.pad_token_id).sum().item()
-        for tokenized in tokenized_list
-    ]
-    return dict(
+def precess_data(tokenizer, instance):
+
+    input_ids, labels = tuple(instance[key] for key in ("input_ids", "labels"))
+    input_ids = input_ids.unsqueeze(0).cuda()
+    labels = labels.unsqueeze(0).cuda() 
+    input_ids = input_ids[:, :tokenizer.model_max_length]
+    labels = labels[:, :tokenizer.model_max_length]
+    batch = dict(
         input_ids=input_ids,
         labels=labels,
-        input_ids_lens=input_ids_lens,
-        labels_lens=labels_lens,
+        attention_mask=input_ids.ne(tokenizer.pad_token_id),
     )
+    batch["input_token_len"] = input_ids.shape[1]
+    # ==========Too many videos or images may lead to OOM, so we encode them one by one======================
+    if 'image' in instance:
+        images = instance["image"].unsqueeze(0).to(torch.bfloat16).cuda()
+        batch['images'] = images  # (B, V, H, W)
 
 
-def _mask_targets(target, tokenized_lens, speakers):
-    # cur_idx = 0
-    cur_idx = tokenized_lens[0]
-    tokenized_lens = tokenized_lens[1:]
-    target[:cur_idx] = IGNORE_INDEX
-    for tokenized_len, speaker in zip(tokenized_lens, speakers):
-        if speaker == "human":
-            target[cur_idx+2:cur_idx + tokenized_len] = IGNORE_INDEX
-        cur_idx += tokenized_len
+    if 'grasps' in instance:
+        grasps = instance["grasps"].unsqueeze(0).to(torch.float32).cuda()
+        batch['gs'] = grasps  # (B, N, 7)
+        
+    if 'pc' in instance:
+        pcs = instance["pc"].unsqueeze(0).to(torch.float32).cuda()
+        batch['pcs'] = pcs  # (B, N, 7)
+
+    if 'depth' in instance:
+        depths = instance["depth"].unsqueeze(0).to(torch.bfloat16).cuda()
+        poses = instance["pose"].unsqueeze(0).to(torch.bfloat16).cuda()
+
+        intrinsics = instance["intrinsic"].unsqueeze(0).to(torch.bfloat16).cuda()
+        
+        batch['depths'] = depths  # (B, V, H, W)
+        batch['poses'] = poses  # (B, V, 4, 4)
+        batch['intrinsics'] = intrinsics  # (B, 4, 4)
+
+        # batch['clicks'] = clicks  # (num_clicks, 3)
+    if 'pure_img' in instance:
+        pure_imgs = instance["pure_img"].unsqueeze(0).to(torch.bfloat16).cuda()
+        batch['pure_imgs'] = pure_imgs # (B, 3, 168, 168)
+    return batch
 
 
-def _add_speaker_and_signal(header, source, get_conversation=True):
-    """Add speaker and start/end signal on each round."""
-    BEGIN_SIGNAL = "### "
-    END_SIGNAL = "\n"
-    conversation = header
-    for sentence in source:
-        from_str = sentence["from"]
-        if from_str.lower() == "human":
-            from_str = conversation_lib.default_conversation.roles[0]
-        elif from_str.lower() == "gpt":
-            from_str = conversation_lib.default_conversation.roles[1]
-        else:
-            from_str = 'unknown'
-        sentence["value"] = (BEGIN_SIGNAL + from_str + ": " +
-                             sentence["value"] + END_SIGNAL)
-        if get_conversation:
-            conversation += sentence["value"]
-    conversation += BEGIN_SIGNAL
-    return conversation
+def image_parser(args):
+    out = args.image_file.split(args.sep)
+    return out
 
 
-def preprocess_multimodal(
-    sources: Sequence[str],
-    is_multimodal: bool = False,
-    mm_use_im_start_end: bool = False
-) -> Dict:
-    # is_multimodal = data_args.is_multimodal
-    if not is_multimodal:
-        return sources
+def load_image(image_file):
+    if image_file.startswith("http") or image_file.startswith("https"):
+        response = requests.get(image_file)
+        image = Image.open(BytesIO(response.content)).convert("RGB")
+    else:
+        image = Image.open(image_file).convert("RGB")
+    return image
 
-    for source in sources:
-        for sentence in source:
-            if DEFAULT_IMAGE_TOKEN in sentence['value'] or DEFAULT_VIDEO_TOKEN in sentence['value']:
-                sentence['value'] = sentence['value'].replace(DEFAULT_VIDEO_TOKEN, DEFAULT_IMAGE_TOKEN)
-                sentence['value'] = sentence['value'].replace(DEFAULT_IMAGE_TOKEN, '').strip()
-                sentence['value'] = DEFAULT_IMAGE_TOKEN + '\n' + sentence['value']
-                sentence['value'] = sentence['value'].strip()
-                if "mmtag" in conversation_lib.default_conversation.version:
-                    sentence['value'] = sentence['value'].replace(DEFAULT_IMAGE_TOKEN, '<Image>' + DEFAULT_IMAGE_TOKEN + '</Image>')
-            if DEFAULT_GRASP_FEATURE_TOKEN in sentence['value']:
-                sentence['value'] = sentence['value'].replace(DEFAULT_GRASP_FEATURE_TOKEN, '').strip()
-                sentence['value'] = DEFAULT_GRASP_FEATURE_TOKEN + '\n' + sentence['value']
-                sentence['value'] = sentence['value'].strip()
-            # Here we replace the <video> token with <image> token to reduce the coding 
-            replace_token, video_replace_token = DEFAULT_IMAGE_TOKEN, DEFAULT_IMAGE_TOKEN
-            if mm_use_im_start_end: # false
-                replace_token = DEFAULT_IM_START_TOKEN + replace_token + DEFAULT_IM_END_TOKEN
-            sentence["value"] = sentence["value"].replace(DEFAULT_IMAGE_TOKEN, replace_token)
-    return sources
+
+def load_images(image_files):
+    out = []
+    for image_file in image_files:
+        image = load_image(image_file)
+        out.append(image)
+    return out
+
+def make_supervised_data_module(tokenizer: transformers.PreTrainedTokenizer,
+                                data_path) -> Dict:
+    """Make dataset and collator for supervised fine-tuning."""
+    eval_dataset = GraspcotDataset_Test(data_path, tokenizer=tokenizer)
+    data_collator = DataCollatorForSupervisedDataset(tokenizer=tokenizer)
+    return dict(train_dataset=None,
+                eval_dataset=eval_dataset,
+                data_collator=data_collator)
+
+def check_grasp(gt, pred):
+    fail = []
+    for i in range(gt.shape[0]):
+        if abs(gt[i] - pred[i]) >= 0.5:
+            fail.append(i)
     
-
-def preprocess_multimodal_unchanged(
-    sources: Sequence[str],
-    is_multimodal: bool = False,
-    mm_use_im_start_end: bool = False
-) -> Dict:
-    # is_multimodal = data_args.is_multimodal
-    if not is_multimodal:
-        return sources
-
-    for source in sources:
-        for sentence in source:
-            if DEFAULT_IMAGE_TOKEN in sentence['value'] or DEFAULT_VIDEO_TOKEN in sentence['value']:
-                sentence['value'] = sentence['value'].replace(DEFAULT_VIDEO_TOKEN, DEFAULT_IMAGE_TOKEN)
-                # sentence['value'] = sentence['value'].replace(DEFAULT_IMAGE_TOKEN, '').strip()
-                # sentence['value'] = DEFAULT_IMAGE_TOKEN + '\n' + sentence['value']
-                # sentence['value'] = sentence['value'].strip()
-                sentence['value'] = sentence['value'].replace(DEFAULT_IMAGE_TOKEN, DEFAULT_IMAGE_TOKEN)
-                if "mmtag" in conversation_lib.default_conversation.version:
-                    sentence['value'] = sentence['value'].replace(DEFAULT_IMAGE_TOKEN, '<Image>' + DEFAULT_IMAGE_TOKEN + '</Image>')
-            if DEFAULT_GRASP_FEATURE_TOKEN in sentence['value']:
-                # sentence['value'] = sentence['value'].replace(DEFAULT_GRASP_FEATURE_TOKEN, '').strip()
-                # sentence['value'] = DEFAULT_GRASP_FEATURE_TOKEN + '\n' + sentence['value']
-                # sentence['value'] = sentence['value'].strip()
-                sentence['value'] = sentence['value'].replace(DEFAULT_GRASP_FEATURE_TOKEN, DEFAULT_GRASP_FEATURE_TOKEN)
-            # Here we replace the <video> token with <image> token to reduce the coding 
-            replace_token, video_replace_token = DEFAULT_IMAGE_TOKEN, DEFAULT_IMAGE_TOKEN
-            if mm_use_im_start_end: # false
-                replace_token = DEFAULT_IM_START_TOKEN + replace_token + DEFAULT_IM_END_TOKEN
-            sentence["value"] = sentence["value"].replace(DEFAULT_IMAGE_TOKEN, replace_token)
-    return sources
-
-
-def preprocess_target_prompts(
-    sources: Sequence[str],
-    targets: Sequence,
-    # data_args: DataArguments
-    is_multimodal: bool = False
-) -> Dict:
-    # is_multimodal = data_args.is_multimodal
-    if not is_multimodal:
-        return sources
-
-    for idx, source in enumerate(sources):
-        target = targets[idx]
-        if target is not None and 'boxes' in target:
-            boxes = target['boxes']
-            clicks = []
-            for box in boxes:
-                click = [round(coord, 3) for coord in box[:3]]
-                clicks.append(click)
-        else:
-            clicks = []
-        for sentence in source:
-            words = sentence['value']
-            boxes_seq = sentence.get('boxes_seq', None)
-            if boxes_seq is not None:
-                boxes = boxes_seq[0]
-                objs_num = len(boxes)
-                obj_placeholder =  DEFAULT_BOX_TOKEN + ', '
-                objs_str = obj_placeholder * objs_num
-                objs_str = objs_str.rstrip(', ')
-                converted = words.replace(DEFAULT_BOX_TOKEN, objs_str)
-                words = converted
-            if boxes_seq is not None:
-                sentence['value'] = words
-    return sources, clicks
-
-def preprocess_llama_2(
-    sources,
-    tokenizer: transformers.PreTrainedTokenizer,
-    has_image: bool = False
-) -> Dict:
-    conv = conversation_lib.default_conversation.copy()
-    roles = {"human": conv.roles[0], "gpt": conv.roles[1]}
-
-    # Apply prompt templates
-    conversations = []
-    for i, source in enumerate(sources):
-        if roles[source[0]["from"]] != conv.roles[0]:
-            # Skip the first one if it is not from human
-            source = source[1:]
-
-        conv.messages = []
-        for j, sentence in enumerate(source):
-            role = roles[sentence["from"]]
-            assert role == conv.roles[j % 2], f"{i}"
-            conv.append_message(role, sentence["value"])
-        conversations.append(conv.get_prompt())
-
-    # Tokenize conversations
-
-    if has_image:
-        input_ids = torch.stack([tokenizer_image_token(prompt, tokenizer, return_tensors='pt') for prompt in conversations], dim=0)
-    else:
-        input_ids = tokenizer(
-            conversations,
-            return_tensors="pt",
-            padding="longest",
-            max_length=tokenizer.model_max_length,
-            truncation=True,
-        ).input_ids
-
-    targets = input_ids.clone()
-
-    assert conv.sep_style == conversation_lib.SeparatorStyle.LLAMA_2
-
-    # Mask targets
-    sep = "[/INST] "
-    for conversation, target in zip(conversations, targets):
-        total_len = int(target.ne(tokenizer.pad_token_id).sum())
-
-        rounds = conversation.split(conv.sep2)
-        cur_len = 1
-        target[:cur_len] = IGNORE_INDEX
-        for i, rou in enumerate(rounds):
-            if rou == "":
-                break
-
-            parts = rou.split(sep)
-            if len(parts) != 2:
-                break
-            parts[0] += sep
-
-            if has_image:
-                round_len = len(tokenizer_image_token(rou, tokenizer))
-                instruction_len = len(tokenizer_image_token(parts[0], tokenizer)) - 2
-            else:
-                round_len = len(tokenizer(rou).input_ids)
-                instruction_len = len(tokenizer(parts[0]).input_ids) - 2
-
-            target[cur_len : cur_len + instruction_len] = IGNORE_INDEX
-
-            cur_len += round_len
-        target[cur_len:] = IGNORE_INDEX
-
-        if cur_len < tokenizer.model_max_length:
-            if cur_len != total_len:
-                target[:] = IGNORE_INDEX
-                print(
-                    f"WARNING: tokenization mismatch: {cur_len} vs. {total_len}."
-                    f" (ignored)"
-                )
-
-    return dict(
-        input_ids=input_ids,
-        labels=targets,
-    )
-
-
-def preprocess_v1(
-    sources,
-    tokenizer: transformers.PreTrainedTokenizer,
-    has_image: bool = False
-) -> Dict:
-    conv = conversation_lib.default_conversation.copy()
-    roles = {"human": conv.roles[0], "gpt": conv.roles[1]}
-
-    # Apply prompt templates
-    conversations = []
-    for i, source in enumerate(sources):
-        if roles[source[0]["from"]] != conv.roles[0]:
-            # Skip the first one if it is not from human
-            source = source[1:]
-
-        conv.messages = []
-        for j, sentence in enumerate(source):
-            role = roles[sentence["from"]]
-            # assert role == conv.roles[j % 2], f"{i}"
-            conv.append_message(role, sentence["value"])
-        conversations.append(conv.get_prompt())   # list of combination conversation(including <image>/n)
-
-    # Tokenize conversations
-    # conversations[0] = "§ § § " + conversations[0]
-    if has_image:
-        input_ids = torch.stack([tokenizer_special_token_v2(prompt, tokenizer, return_tensors='pt') for prompt in conversations], dim=0)
-    else:
-        input_ids = tokenizer(
-            conversations,
-            return_tensors="pt",
-            padding="longest",
-            max_length=tokenizer.model_max_length,
-            truncation=True,
-        ).input_ids
-
-    targets = input_ids.clone()
-
-    assert conv.sep_style == conversation_lib.SeparatorStyle.TWO
-
-    sep = conv.sep + conv.roles[1] + ": "
-    for conversation, target in zip(conversations, targets):
-        total_len = int(target.ne(tokenizer.pad_token_id).sum())
-
-        rounds = conversation.split(conv.sep2)
-        cur_len = 1
-        target[:cur_len] = IGNORE_INDEX
-        for i, rou in enumerate(rounds):
-            if rou == "":
-                break
-
-            parts = rou.split(sep)
-            if len(parts) != 2:
-                break
-            parts[0] += sep
-
-            if has_image:
-                round_len = len(tokenizer_special_token_v2(rou, tokenizer))
-                instruction_len = len(tokenizer_special_token_v2(parts[0], tokenizer)) - 2
-            else:
-                round_len = len(tokenizer(rou).input_ids)
-                instruction_len = len(tokenizer(parts[0]).input_ids) - 2
-
-            if i != 0 and not tokenizer.legacy and IS_TOKENIZER_GREATER_THAN_0_14:
-                round_len -= 1
-                instruction_len -= 1
-
-            target[cur_len : cur_len + instruction_len] = IGNORE_INDEX
-
-            cur_len += round_len
-        target[cur_len:] = IGNORE_INDEX
-
-        # a = target[target==UNSUPERVISED_TOKEN_INDEX]
-        target[target==UNSUPERVISED_TOKEN_INDEX] = TEPORARY_IGNORE_INDEX
-        # target[target==UNSUPERVISED_TOKEN_INDEX] = IGNORE_INDEX
-
-        if cur_len < tokenizer.model_max_length:
-            if cur_len != total_len:
-                target[:] = IGNORE_INDEX
-                print(rounds)
-                print(
-                    f"WARNING: tokenization mismatch: {cur_len} vs. {total_len}."
-                    f" (ignored)"
-                )
-
-    return dict(
-        input_ids=input_ids,
-        labels=targets,
-    )
-
-
-def preprocess_mpt(
-    sources,
-    tokenizer: transformers.PreTrainedTokenizer,
-    has_image: bool = False
-) -> Dict:
-    conv = conversation_lib.default_conversation.copy()
-    roles = {"human": conv.roles[0], "gpt": conv.roles[1]}
-
-    # Apply prompt templates
-    conversations = []
-    for i, source in enumerate(sources):
-        if roles[source[0]["from"]] != conv.roles[0]:
-            # Skip the first one if it is not from human
-            source = source[1:]
-
-        conv.messages = []
-        for j, sentence in enumerate(source):
-            role = roles[sentence["from"]]
-            assert role == conv.roles[j % 2], f"{i}"
-            conv.append_message(role, sentence["value"])
-        conversations.append(conv.get_prompt())
-
-    # Tokenize conversations
-
-    if has_image:
-        input_ids = torch.stack([tokenizer_image_token(prompt, tokenizer, return_tensors='pt') for prompt in conversations], dim=0)
-    else:
-        input_ids = tokenizer(
-            conversations,
-            return_tensors="pt",
-            padding="longest",
-            max_length=tokenizer.model_max_length,
-            truncation=True,
-        ).input_ids
-
-    targets = input_ids.clone()
-    assert conv.sep_style == conversation_lib.SeparatorStyle.MPT
-
-    # Mask targets
-    sep = conv.sep + conv.roles[1]
-    for conversation, target in zip(conversations, targets):
-        total_len = int(target.ne(tokenizer.pad_token_id).sum())
-
-        rounds = conversation.split(conv.sep)
-        re_rounds = [conv.sep.join(rounds[:3])]
-        for conv_idx in range(3, len(rounds), 2):
-            re_rounds.append(conv.sep.join(rounds[conv_idx:conv_idx+2]))
-        cur_len = 0
-        target[:cur_len] = IGNORE_INDEX
-        for i, rou in enumerate(re_rounds):
-            if rou == "":
-                break
-
-            parts = rou.split(sep)
-            if len(parts) != 2:
-                break
-            parts[0] += sep
-
-            if has_image:
-                round_len = len(tokenizer_image_token(rou, tokenizer))
-                instruction_len = len(tokenizer_image_token(parts[0], tokenizer)) - 1
-            else:
-                round_len = len(tokenizer(rou).input_ids)
-                instruction_len = len(tokenizer(parts[0]).input_ids) - 1
-
-            if i != 0 and getattr(tokenizer, 'legacy', False) and IS_TOKENIZER_GREATER_THAN_0_14:
-                round_len += 1
-                instruction_len += 1
-
-            target[cur_len : cur_len + instruction_len] = IGNORE_INDEX
-
-            cur_len += round_len
-        target[cur_len:] = IGNORE_INDEX
-
-        if cur_len < tokenizer.model_max_length:
-            if cur_len != total_len:
-                target[:] = IGNORE_INDEX
-                print(
-                    f"WARNING: tokenization mismatch: {cur_len} vs. {total_len}."
-                    f" (ignored)"
-                )
-
-    return dict(
-        input_ids=input_ids,
-        labels=targets,
-    )
-
-
-def preprocess_plain(
-    sources: Sequence[str],
-    tokenizer: transformers.PreTrainedTokenizer,
-) -> Dict:
-    # add end signal and concatenate together
-    conversations = []
-    for source in sources:
-        assert len(source) == 2
-        assert DEFAULT_IMAGE_TOKEN in source[0]['value']
-        source[0]['value'] = DEFAULT_IMAGE_TOKEN
-        conversation = source[0]['value'] + source[1]['value'] + conversation_lib.default_conversation.sep
-        conversations.append(conversation)
-    # tokenize conversations
-    input_ids = [tokenizer_image_token(prompt, tokenizer, return_tensors='pt') for prompt in conversations]
-    targets = copy.deepcopy(input_ids)
-    for target, source in zip(targets, sources):
-        tokenized_len = len(tokenizer_image_token(source[0]['value'], tokenizer))
-        target[:tokenized_len] = IGNORE_INDEX
-
-    return dict(input_ids=input_ids, labels=targets)
-
-
-def preprocess(
-    sources: Sequence[str],
-    tokenizer: transformers.PreTrainedTokenizer,
-    has_image: bool = False
-) -> Dict:
-    """
-    Given a list of sources, each is a conversation list. This transform:
-    1. Add signal '### ' at the beginning each sentence, with end signal '\n';
-    2. Concatenate conversations together;
-    3. Tokenize the concatenated conversation;
-    4. Make a deepcopy as the target. Mask human words with IGNORE_INDEX.
-    """
-    if conversation_lib.default_conversation.sep_style == conversation_lib.SeparatorStyle.PLAIN:
-        return preprocess_plain(sources, tokenizer)
-    if conversation_lib.default_conversation.sep_style == conversation_lib.SeparatorStyle.LLAMA_2:
-        return preprocess_llama_2(sources, tokenizer, has_image=has_image)
-    if conversation_lib.default_conversation.version.startswith("v1"):
-        return preprocess_v1(sources, tokenizer, has_image=has_image)
-    if conversation_lib.default_conversation.version == "mpt":
-        return preprocess_mpt(sources, tokenizer, has_image=has_image)
-    # add end signal and concatenate together
-    conversations = []
-    for source in sources:
-        header = f"{conversation_lib.default_conversation.system}\n\n"
-        conversation = _add_speaker_and_signal(header, source)
-        conversations.append(conversation)
-    # tokenize conversations
-    def get_tokenize_len(prompts):
-        return [len(tokenizer_image_token(prompt, tokenizer)) for prompt in prompts]
-
-    if has_image:
-        input_ids = [tokenizer_image_token(prompt, tokenizer, return_tensors='pt') for prompt in conversations]
-    else:
-        conversations_tokenized = _tokenize_fn(conversations, tokenizer)
-        input_ids = conversations_tokenized["input_ids"]
-
-    targets = copy.deepcopy(input_ids)
-    for target, source in zip(targets, sources):
-        if has_image:
-            tokenized_lens = get_tokenize_len([header] + [s["value"] for s in source])
-        else:
-            tokenized_lens = _tokenize_fn([header] + [s["value"] for s in source], tokenizer)["input_ids_lens"]
-        speakers = [sentence["from"] for sentence in source]
-        _mask_targets(target, tokenized_lens, speakers)
-
-    return dict(input_ids=input_ids, labels=targets)
-
-
-def mask_text_llava_compatible(text, tokenizer):
-    """
-    通过分词结果直接替换每个Token为单位占位符，确保长度一致
-    Args:
-        text: 输入字符串
-        tokenizer: LLaVA/Vicuna的分词器
-    Returns:
-        masked_text: 替换后的字符串
-        is_ok: 是否长度一致
-        original_tokens: 原始分词结果
-        masked_tokens: 替换后分词结果
-    """
-    original_tokens = tokenizer.tokenize(text)
-
-    masked_text = "_ " * len(original_tokens)
-
-    masked_text = masked_text[:-1]
-
-    masked_tokens = tokenizer.tokenize(masked_text)
-    
-    return masked_text
-
-def get_motion_definition(motion_attributes: List[str], motion_name: str) -> Optional[str]:
-    """
-    从 motion_attributes (每个元素形如 'Name:Definition...') 中，
-    根据 motion_name (如 'Pour.' / 'Surface Slide.') 找到对应的定义并返回。
-    找不到则返回 None。
-    """
-    if not motion_name:
+    print("fail grasps", len(fail))
+    print("fail indices:", fail)
+    return len(fail)
+
+def safe_ap(y_true, y_score):
+    """AP 需要同时有正/负样本，否则该 instance 的 AP 没意义，返回 None。"""
+    y_true = np.asarray(y_true).astype(int)
+    y_score = np.asarray(y_score).astype(float)
+    if y_true.size == 0:
         return None
 
-    # 规范化：去空格、去末尾句号、统一大小写
-    def norm(s: str) -> str:
-        s = s.strip()
-        s = re.sub(r"\.+$", "", s)   # 去掉末尾一个或多个 '.'
-        s = re.sub(r"\s+", " ", s)   # 合并多余空格
-        return s.lower()
+    # 如果全是正样本，添加一个负样本（score=0），以便计算 AP
+    # 这里对应 "把负样本当成1个" 的处理
+    if (y_true == 1).sum() > 0 and (y_true == 0).sum() == 0:
+        y_true = np.append(y_true, 0)
+        y_score = np.append(y_score, 0.0)
+    
+    # 如果全是负样本
+    # AP 是排序指标，没有正样本作为参照无法计算排序质量。
+    # 这里采用 "1 - 最大误报概率" 作为得分：
+    # - 如果预测全是 0.1 (正确拒绝)，得分 1 - 0.1 = 0.9 (高分)
+    # - 如果预测出现 0.9 (错误激活)，得分 1 - 0.9 = 0.1 (低分)
+    elif (y_true == 0).sum() > 0 and (y_true == 1).sum() == 0:
+        return float(1.0 - np.max(y_score))
 
-    target = norm(motion_name)
+    if (y_true == 1).sum() == 0 or (y_true == 0).sum() == 0:
+        return None
+    return float(average_precision_score(y_true, y_score))
 
-    for line in motion_attributes:
-        if not line or ":" not in line:
+def get_instance_key(sample: dict):
+    """
+    从 dataset sample 里提取 instance 标识。
+    你可以把最匹配你数据集的 key 放到最前面。
+    """
+    candidate_keys = [
+        "pc_path"
+    ]
+    for k in candidate_keys:
+        if k in sample:
+            v = sample[k]
+            if torch.is_tensor(v):
+                if v.numel() == 1:
+                    v = v.item()
+                else:
+                    v = v.detach().cpu().numpy().tolist()
+            return str(v)
+
+    # 兜底：如果 sample 里有路径字段，就取 basename
+    path_keys = ["image_path", "rgb_path", "depth_path", "path", "file_path", "data_path"]
+    for k in path_keys:
+        if k in sample:
+            return os.path.basename(str(sample[k]))
+
+    # 最后兜底：用 index（如果你传进来）
+    if "index" in sample:
+        return f"sample_{sample['index']}"
+    return "unknown_instance"
+
+def compute_instance_mAP(inst2labels, inst2scores, verbose=False):
+    aps = []
+    for inst in inst2scores.keys():
+        ap = safe_ap(inst2labels[inst], inst2scores[inst])
+        if ap is None:
             continue
+        aps.append(ap)
+        if verbose:
+            print(f"[AP] {inst}: {ap:.4f}  (N={len(inst2labels[inst])})")
+    mAP = float(np.mean(aps)) if len(aps) > 0 else float("nan")
+    return mAP, len(aps)
 
-        name_part, definition_part = line.split(":", 1)
-        if norm(name_part) == target:
-            return definition_part.strip()
-
-    return None
-
-class GraspcotDataset_Train(Dataset):
-    """
-    Data loading class for training.
-    """
-    def __init__(self, dataset_path: str, tokenizer= transformers.PreTrainedTokenizer):
-        """
-        dataset_path (str): path to the dataset
-        """
-        super().__init__()
-        self.dataset_path = dataset_path
+def compute_top1_acc(inst2labels, inst2scores):
+    accs = []
+    for inst in inst2scores.keys():
+        scores = np.array(inst2scores[inst])
+        labels = np.array(inst2labels[inst])
         
-        self.tokenizer = tokenizer
-        # self.ann_file = [f"data/grasp_anything/grasp_anything_infos_train_{str(i)}.pkl" for i in range(8)]
-        # self.dialogue_file = ["data/grasp_anything/dialogues/dialogue_infos_train_all.pkl"]
-        self.ann_file = [f"/Data/wucl/taskgrasp_image/grasp_task_infos_train_0_class.pkl"]
-        # self._load()
-        self.aligned_infos = self.load_annotations(self.ann_file)
-
-        # self.dialogue_infos = self.load_annotations(self.dialogue_file)
-        # self.aligned_infos = self.align_annotations()
-        # print(len(self.aligned_infos['infos']))
-        # self.visualize_pc_data()
-
-
-    def load_annotations(self, ann_file_list):
-        """Load annotations from ann_file.
-
-        Args:
-            ann_file (str): Path of the annotation file.
-
-        Returns:
-            list[dict]: List of annotations.
-        """
-        # loading data from a file-like object needs file format
-
-        for i, ann_file in enumerate(ann_file_list):
-            if i==0:
-                data_infos = mmengine.load(ann_file, file_format='pkl')
-            else:
-                tmp_data = mmengine.load(ann_file, file_format='pkl')
-                data_infos['infos'] += tmp_data['infos']
-        return data_infos
-
-    def get_data_info(self, index):
-        scene_idx = index // 10
-        prompt_idx = index % 10
-        info = self.aligned_infos['infos'][scene_idx]
-        # info = self.aligned_infos['infos'][index]
-        
-        scene = info['scene_token']
-        obj = scene.split('_', 1)[1]
-        category_task = parse_txt_to_records(txt_path=f"{self.dataset_path}/scans/{scene}/task_category_related_infer.txt")
-        part_task = parse_txt_to_records(txt_path=f"{self.dataset_path}/scans/{scene}/task_part_related_infer.txt")
-        total_task = category_task + part_task
-
-        if total_task[prompt_idx][-1].strip('.') == "None":
-            # return self.get_data_info((index + 1) % len(self))
-            grasp_part = "None"
-        else:
-            txt_part = total_task[prompt_idx][-1]
-            grasp_part = re.search(r'Grasp part:\s*([^;.]+)', txt_part).group(1).strip()
-
-
-        # try:
-        #     with open(f"{self.dataset_path}/scans/{scene}/prompt.pkl", "rb") as f:
-        #         prompts = pickle.load(f)
-        #         prompt = prompts[prompt_idx]
-
-        # except Exception as e:
-        #     print(f"Error loading prompt for scene {scene}: {e}")
-        #     prompt = ["", "", "", ""]
-        #     obj_name_list = []
-
-        txt_parts = read_object_part(f"{self.dataset_path}/scans/{scene}/object_part.txt")
-        # parts = read_part(f"{self.dataset_path}/scans/{scene}/object_part.txt")
-        # grasp_part = random.choice(parts)
-
-        pc_path = info['pc_path']
-        img_path = info['img_path']
-        depth_path = info['depth_path']
-
-        ext = torch.from_numpy(info['pose']).to(torch.bfloat16)
-        intrinsic = torch.from_numpy(info['intrinsic']).to(torch.bfloat16)
-
-        gs_prompts_list = info['gs_prompts']
-
-        # new_gs_labels = []
-        # for part_name in gs_prompts_list[0]:
-        #     if part_name == grasp_part:
-        #         new_gs_labels.append(1)
-        #     else:
-        #         new_gs_labels.append(0) 
-
-        new_gs_labels = []
-        for idx, part_name in enumerate(gs_prompts_list[0]):
-            if part_name == grasp_part and total_task[prompt_idx][1].strip('.') in gs_prompts_list[1][idx]:
-                new_gs_labels.append(1)
-            else:
-                new_gs_labels.append(0)
-
-        grasps = info['gs']
-        gs_labels = torch.tensor(new_gs_labels, dtype=torch.int64).unsqueeze(1)
-        N = gs_labels.shape[0]
-        idx = torch.randint(0, N, (1,)).item()
-        gs_labels = gs_labels[idx:idx+1, :]
-        grasps = [grasps[0][idx:idx+1, :, :].reshape(6,3)]
-
-        # print(gs_labels.shape, len(grasps))
-        # gs_labels = info['gs_labels']
-
-        pc = np.load(f"{self.dataset_path}/scans/{scene}/down_pc_4096.npy")
-        pc = torch.from_numpy(pc).to(torch.float32)
-
-        rgb = []
-        for i in range(4):
-            rgb_i = get_rgb(f"{self.dataset_path}/scans/" + img_path + f"_{str(i)}.png")
-            rgb.append(torch.from_numpy(rgb_i).to(torch.bfloat16))
-        rgb = torch.stack(rgb)
-
-        depth = np.load(f"{self.dataset_path}/scans/" + depth_path + ".npy")
-        depth = torch.from_numpy(depth).to(torch.bfloat16) / 255.0
-
-        query_list, query_obj_list, response_list = [], [], []
-        
-        conversations = []
-        mask_conversations = []
-
-        
-        # motion_definition = get_motion_definition(motion_attributes, prompt[1])
-        # request_str = f"The task is: {prompt[0]} This task belongs to the motion primitive {prompt[1]} The definition of this motion primitive is: {motion_definition} According to <image>, the object in the image is {obj}, which consists of the following parts: {parts} The attributes of each part are: {part_pro} The part {prompt[3][:-1]} satisfies the task semantics and can execute the motion primitives to which the task belongs. There are several grasps on the object the {obj}. <grasp_feature>. Which grasps are on the part {prompt[3][:-1]}?"
-        # request_str = f"According to <image>, the object in the image is {obj}, which consists of the following parts: {parts}. There are several grasps on the object the {obj}. <grasp_feature>. Which grasps are on the {grasp_part} part?"
-        request_str = f"Given <image>, the object in the image is {obj}, which consists of the following parts: {txt_parts}. There are 25 candidate grasps for the {obj}. <grasp_feature>. Which grasps are located on the {grasp_part}?"
-
-        indices = torch.nonzero(gs_labels.squeeze(1)).squeeze(1).tolist()
-        number_words = [number_model[idx] for idx in indices]
-        # Use "," instead of ", " to avoid tokenization mismatch (24 tokens diff for 25 items)
-        number_words = [w.replace("\u200b","").strip() for w in number_words]
-        response_str = ",".join(number_words)
-        if response_str == "":
-            response_str = "None."
-        else:
-            response_str += "."
-
-        mask_response_str = mask_text_llava_compatible(response_str, self.tokenizer)
-        request = {
-            "from": "human",
-            "value": request_str
-        }
-        response = {
-            "from": "gpt",
-            "value": response_str
-        }
-        conversations += [request, response]
-        mask_conversations += [request, {"from": "gpt", "value": mask_response_str}]
-        query_list.append(request_str)
-        response_list.append(response_str)
-        
-
-        pos_grasps = []
-        pos_gs_labels = []
-        pos_grasp_ids = []
-
-        pos_grasps.append(grasps[0])
-        pos_gs_labels.append(gs_labels)
-        pos_grasp_ids.append(scene+"_"+str(0))
-
-
-        pos_gs = torch.cat(pos_grasps, dim=0)
-        pos_gs_label = torch.cat(pos_gs_labels, dim=0)
-
-
-        sources = preprocess_multimodal_unchanged(
-            copy.deepcopy([conversations]),
-            is_multimodal=True)
-
-        mask_sources = preprocess_multimodal_unchanged(
-            copy.deepcopy([mask_conversations]),
-            is_multimodal=True)
-
-        data_dict = preprocess(sources, tokenizer=self.tokenizer, has_image=True)
-        mask_data_dict = preprocess(mask_sources, tokenizer=self.tokenizer, has_image=True)
-
-        # input_ids = mask_data_dict["input_ids"][0]
-        input_ids = data_dict["input_ids"][0]
-        labels = data_dict["labels"][0]
-
-        input_dict = dict(
-            grasp_ids=pos_grasps,
-            input_ids=input_ids, 
-            labels=labels,
-            scene = scene, 
-            pc = pc,
-            pc_path = pc_path,
-            image = rgb,
-            depth = depth, 
-            grasps = pos_gs, 
-            gs_labels = pos_gs_label.squeeze(1), 
-            pose = ext, 
-            intrinsic = intrinsic
-        )
-
-        return input_dict
-
+        if len(scores) == 0:
+            continue
             
-    def __getitem__(self, index):
-        """
-        index (int): the element index
-        """
-        data_dict = self.get_data_info(index)
-        return data_dict
-
-    def __len__(self):
-        return len(self.aligned_infos['infos']) * 10
-    
-
-class GraspcotDataset_Test(Dataset):
-    """
-    Data loading class for training.
-    """
-    def __init__(self, dataset_path: str, tokenizer= transformers.PreTrainedTokenizer):
-        """
-        dataset_path (str): path to the dataset
-        """
-        super().__init__()
-        self.dataset_path = dataset_path
+        # 找到预测概率最大的索引
+        max_idx = np.argmax(scores)
         
-        self.tokenizer = tokenizer
+        # 检查对应标签是否为1
+        is_correct = 1 if labels[max_idx] == 1 else 0
+        accs.append(is_correct)
         
-        self.ann_file = [f"/Data/wucl/taskgrasp_image/grasp_task_infos_test_0_class.pkl"]
-        # self.dialogue_file = ["data/grasp_anything/dialogues/dialogue_infos_val_all.pkl"]
-        
-        self.aligned_infos = self.load_annotations(self.ann_file)
-        # self.dialogue_infos = self.load_annotations(self.dialogue_file)
-        # self.aligned_infos = self.align_annotations()
-    
+    top1_acc = float(np.mean(accs)) if len(accs) > 0 else 0.0
+    return top1_acc, len(accs)
 
-    def load_annotations(self, ann_file_list):
-        """Load annotations from ann_file.
+def update_global_buffers(global_scores, global_labels, scores, labels):
+    """把一个 batch/一个 sample 的 scores/labels 加到全局列表里。"""
+    global_scores.extend(np.asarray(scores, dtype=float).reshape(-1).tolist())
+    global_labels.extend(np.asarray(labels, dtype=int).reshape(-1).tolist())
 
-        Args:
-            ann_file (str): Path of the annotation file.
+def compute_overall_ap(global_scores, global_labels):
+    """把所有 instance 混在一起，算一次 AP（micro / overall AP）。"""
+    y_score = np.asarray(global_scores, dtype=float)
+    y_true  = np.asarray(global_labels, dtype=int)
 
-        Returns:
-            list[dict]: List of annotations.
-        """
-        # loading data from a file-like object needs file format
+    # AP 至少需要同时存在正/负样本
+    if (y_true == 1).sum() == 0 or (y_true == 0).sum() == 0:
+        return float("nan")
+    return float(average_precision_score(y_true, y_score))
 
-        for i, ann_file in enumerate(ann_file_list):
-            if i==0:
-                data_infos = mmengine.load(ann_file, file_format='pkl')
-            else:
-                tmp_data = mmengine.load(ann_file, file_format='pkl')
-                data_infos['infos'] += tmp_data['infos']
-        return data_infos
+def eval_model(args):
+    # Model
+    disable_torch_init()
 
-    def get_obj_task(self, obj):
-        for index in range(len(self.aligned_infos['infos'])):
-            info = self.aligned_infos['infos'][index]
-            if info['scene_token'] == obj:
-                return index
+    torch_dtype = torch.float32
+    if args.precision == "bf16":
+        torch_dtype = torch.bfloat16
+    elif args.precision == "fp16":
+        torch_dtype = torch.half
 
+    model_name = get_model_name_from_path(args.model_path)
+    print("********************* load model Start *********************")
+    tokenizer, model, processor, context_len = load_pretrained_grasp_model(
+        args.model_path, args.model_base, model_name, use_flash_attn=True, torch_dtype=torch_dtype
+    )
+    print("********************* load model End *********************")
 
-    def get_data_info(self, index, task=None, part=None):
-        scene_idx = index // 10
-        prompt_idx = index % 10
-        info = self.aligned_infos['infos'][scene_idx]
-        # info = self.aligned_infos['infos'][index]
-
-        scene = info['scene_token']
-        
-        obj = scene.split('_', 1)[1]
-
-        category_task = parse_txt_to_records(txt_path=f"{self.dataset_path}/scans/{scene}/task_category_related_infer.txt")
-        part_task = parse_txt_to_records(txt_path=f"{self.dataset_path}/scans/{scene}/task_part_related_infer.txt")
-        total_task = category_task + part_task
-        # prompt_idx = random.randint(0, 9)
-        if total_task[prompt_idx][-1].strip('.') == "None":
-            # return self.get_data_info((index + 1) % len(self))
-            grasp_part = "None"
-        else:
-            txt_part = total_task[prompt_idx][-1]
-            grasp_part = re.search(r'Grasp part:\s*([^;.]+)', txt_part).group(1).strip()
+    model.eval()
 
 
-        # try:
-        #     with open(f"/Data/wucl/taskgrasp_image/scans/{scene}/prompt.pkl", "rb") as f:
-        #         prompts = pickle.load(f)
-        #         prompt = random.choice(prompts)
+    # if hasattr(model, 'model') and hasattr(model.model, 'grasp_tower'):
+    #     print("Forcing grasp_tower to TRAIN mode due to missing BatchNorm stats...")
+    #     model.model.grasp_tower.train()
+    # elif hasattr(model, 'grasp_tower'):
+    #     print("Forcing grasp_tower to TRAIN mode due to missing BatchNorm stats...")
+    #     model.grasp_tower.train()
 
-        # except Exception as e:
-        #     print(f"Error loading prompt for scene {scene}: {e}")
-        #     prompt = ["", "", "", ""]
-        #     obj_name_list = []
-
-        if task is not None and part is not None:
-            total_task[prompt_idx][0] = task
-            grasp_part = part + '.'
-
-        print("scene:", scene)
-        print("task:", total_task[prompt_idx][0])
-        print("part", grasp_part)
-
-        pc_path = info['pc_path']
-        img_path = info['img_path']
-        depth_path = info['depth_path']
-
-        ext = torch.from_numpy(info['pose']).to(torch.bfloat16)
-        intrinsic = torch.from_numpy(info['intrinsic']).to(torch.bfloat16)
-
-        gs_prompts_list = info['gs_prompts']
-        grasps = info['gs']
-        gs_labels = info['gs_labels']
-
-        # new_gs_labels = []
-        # for part_name in gs_prompts_list[0]:
-        #     if part_name == grasp_part:
-        #         new_gs_labels.append(1)
-        #     else:
-        #         new_gs_labels.append(0)
-
-        new_gs_labels = []
-        for idx, part_name in enumerate(gs_prompts_list[0]):
-            if part_name == grasp_part and total_task[prompt_idx][1].strip('.') in gs_prompts_list[1][idx]:
-                new_gs_labels.append(1)
-            else:
-                new_gs_labels.append(0)
-
-
-        gs_labels = torch.tensor(new_gs_labels, dtype=torch.int64).unsqueeze(1)
-        # N = gs_labels.shape[0]
-        # idx = torch.randint(0, N, (1,)).item()
-        # gs_labels = gs_labels[idx:idx+1, :]
-        # grasps = [grasps[0][idx:idx+1, :, :].reshape(6,3)]
-
-
-        pc = np.load(f"{self.dataset_path}/scans/{scene}/down_pc_4096.npy")
-        pc = torch.from_numpy(pc).to(torch.float32)
-
-        rgb = []
-        for i in range(4):
-            rgb_i = get_rgb(f"{self.dataset_path}/scans/" + img_path + f"_{str(i)}.png")
-            rgb.append(torch.from_numpy(rgb_i).to(torch.bfloat16))
-        rgb = torch.stack(rgb)
-
-        depth = np.load(f"{self.dataset_path}/scans/" + depth_path + ".npy")
-        depth = torch.from_numpy(depth).to(torch.bfloat16) / 255.0
-
-        query_list, response_list = [], []
-        conversations = []
-        mask_conversations = []
-
-        txt_parts = read_object_part(f"{self.dataset_path}/scans/{scene}/object_part.txt")
-        
-
-        # request_str = f"The task is: {prompt[0]} This task belongs to the motion primitive {prompt[1]} The definition of this motion primitive is: {motion_definition} According to <image>, the object in the image is {obj}, which consists of the following parts: {parts} The attributes of each part are: {part_pro} The part {prompt[3][:-1]} satisfies the task semantics and can execute the motion primitives to which the task belongs. There are several grasps on the object the {obj}. <grasp_feature>. Which grasps are on the part {prompt[3][:-1]}?"
-        # request_str = f"The task is: {prompt[0]} This task belongs to the motion primitive {prompt[1]} The definition of this motion primitive is: {motion_definition} The object is {obj}, which consists of the following parts: {parts} The attributes of each part are: {part_pro} The part {prompt[3][:-1]} satisfies the task semantics and can execute the motion primitives to which the task belongs. There are several grasps on the object the {obj}. <grasp_feature>. Which grasps are on the part {prompt[3][:-1]}?"
-        request_str = f"Given <image>, the object in the image is {obj}, which consists of the following parts: {txt_parts}. There are 25 candidate grasps for the {obj}. <grasp_feature>. Which grasps are located on the {grasp_part}?"
-
-        indices = torch.nonzero(gs_labels.squeeze(1)).squeeze(1).tolist()
-        number_words = [number_model[idx] for idx in indices]
-        # Use "," instead of ", " to avoid tokenization mismatch (24 tokens diff for 25 items)
-        number_words = [w.replace("\u200b","").strip() for w in number_words]
-        response_str = ",".join(number_words)
-        if response_str == "":
-            response_str = "None."
-        else:
-            response_str += "."
-
-        mask_response_str = mask_text_llava_compatible(response_str, self.tokenizer)
-        request = {
-            "from": "human",
-            "value": request_str
-        }
-        response = {
-            "from": "gpt",
-            "value": response_str
-        }
-        conversations += [request, response]
-        mask_conversations += [request, {"from": "gpt", "value": mask_response_str}]
-        query_list.append(request_str)
-        response_list.append(response_str)
-
-
-        pos_grasps = []
-        pos_gs_labels = []
-        pos_grasp_ids = []
-
-        pos_grasps.append(grasps[0])
-        pos_gs_labels.append(gs_labels)
-        pos_grasp_ids.append(scene+"_"+str(0))
-
-        pos_gs = torch.cat(pos_grasps, dim=0)
-        pos_gs_label = torch.cat(pos_gs_labels, dim=0)
-
-        # query_list = [request_str_1, request_str_2, request_str_3, request_str_4]
-        # query_list = [request_str_1, request_str_2, request_str_3]
-        query_list = [request_str]
-
-        sources = preprocess_multimodal_unchanged(
-            copy.deepcopy([conversations]),
-            is_multimodal=True)
-
-        mask_sources = preprocess_multimodal_unchanged(
-            copy.deepcopy([mask_conversations]),
-            is_multimodal=True)
-
-        data_dict = preprocess(sources, tokenizer=self.tokenizer, has_image=True)
-        mask_data_dict = preprocess(mask_sources, tokenizer=self.tokenizer, has_image=True)
-
-        # input_ids = mask_data_dict["input_ids"][0]
-        input_ids = data_dict["input_ids"][0]
-        labels = data_dict["labels"][0]
-
-        input_dict = dict(
-            grasp_ids=pos_grasps,
-            input_ids=input_ids,
-            questions=query_list, # Added this
-            labels=labels,
-            scene = scene,
-            pc = pc,
-            pc_path = pc_path,
-            image = rgb,
-            depth = depth, 
-            grasps = pos_gs, 
-            gs_labels = pos_gs_label.squeeze(1), 
-            pose = ext, 
-            intrinsic = intrinsic
-        )
-
-        return input_dict
+    # DEBUG: Check if BN stats are loaded correctly
+    # print("DEBUG: Inspecting Grasp Tower BN Stats...")
+    # bn_found = False
+    # for name, module in model.named_modules():
+    #     if isinstance(module, torch.nn.BatchNorm1d) or isinstance(module, torch.nn.BatchNorm2d):
+    #         print(f"Layer: {name}")
+    #         print(f"  running_mean[:5]: {module.running_mean[:5].cpu().tolist()}")
+    #         print(f"  running_var[:5]:  {module.running_var[:5].cpu().tolist()}")
+    #         print(f"  num_batches_tracked: {module.num_batches_tracked}")
+    #         bn_found = True
             
-    def __getitem__(self, index):
-        """
-        index (int): the element index
-        """
-        data_dict = self.get_data_info(index)
-        return data_dict
+    # if not bn_found:
+    #     print("DEBUG: No BatchNorm1d layer found in grasp_tower.")
 
-    def __len__(self):
-        return len(self.aligned_infos['infos']) * 10
+    if "llama-2" in model_name.lower():
+        conv_mode = "llava_llama_2"
+    elif "mistral" in model_name.lower():
+        conv_mode = "mistral_instruct"
+    elif "v1.6-34b" in model_name.lower():
+        conv_mode = "chatml_direct"
+    elif "v1" in model_name.lower():
+        conv_mode = "llava_v1"
+    elif "3d" in model_name.lower():
+        conv_mode = "llava_v1"
+    elif "mpt" in model_name.lower():
+        conv_mode = "mpt"
+    else:
+        # conv_mode = "llava_v0"
+        conv_mode = args.conv_mode
+
+    tokenizer.pad_token = tokenizer.unk_token
+    if conv_mode in conversation_lib.conv_templates:
+        conversation_lib.default_conversation = conversation_lib.conv_templates[conv_mode]
+    else:
+        conversation_lib.default_conversation = conversation_lib.conv_templates["vicuna_v1"]
+
+    test_dataset = GraspcotDataset_Test(args.data_path, tokenizer=tokenizer)
+    data_lens = len(test_dataset)
+
+    model.config.use_dialogue = True
 
 
-tokenizer = transformers.AutoTokenizer.from_pretrained(
-    # model_args.model_name_or_path,
-    "/Data/wucl/ProGrasp/pretrained_llms/llava-3d-7b",
-    model_max_length=4096,
-    padding_side="right",
-    use_fast=False,
-)
+    global_scores = []
+    global_labels = []
+
+
+    len_data = len(test_dataset)
+    num_val = len(test_dataset)
+    data_list = list(range(len_data))
+    selected_data = random.sample(data_list, num_val)
+
+    grasp_dict = {}
+    accuracy_cnt = 0
+    avg_time = 0.0
+    num_fail = 0
+    preds_list = []
+
+    inst2scores = defaultdict(list)  # instance -> [pred_score...]
+    inst2labels = defaultdict(list)  # instance -> [0/1...]
+
+    for i in tqdm(selected_data):
+        instance = test_dataset.__getitem__(i)
+        instance_key = get_instance_key(instance)
+        gs_labels = instance["gs_labels"]
+        questions = instance.pop("questions")
+        inputs = precess_data(tokenizer, instance)
+        inputs['gs'] = inputs['gs'].reshape(25, 6, 3)
+        inputs['pcs'] = inputs['pcs'].repeat(inputs['gs'].shape[0], 1, 1)
+        inputs['input_ids'] = inputs['input_ids'].repeat(inputs['gs'].shape[0], 1)
+        inputs['labels'] = inputs['labels'].repeat(inputs['gs'].shape[0], 1)
+        inputs['attention_mask'] = inputs['attention_mask'].repeat(inputs['gs'].shape[0], 1)
+        inputs['images'] = inputs['images'].repeat(inputs['gs'].shape[0], 1, 1, 1, 1)
+        inputs['depths'] = inputs['depths'].repeat(inputs['gs'].shape[0], 1, 1, 1)
+        inputs['poses'] = inputs['poses'].repeat(inputs['gs'].shape[0], 1, 1, 1)
+        inputs['intrinsics'] = inputs['intrinsics'].repeat(inputs['gs'].shape[0], 1, 1, 1)
+
+        grasp_out = False
+        start_time = time.time()
+        with torch.inference_mode():
+            grasp_outs, outputs = model(**inputs)
+            preds = grasp_outs['all_cls_scores'][0]
+            preds = preds.squeeze(0).squeeze(-1)
+            gs_labels = gs_labels.to(preds.device).float()
+            y_score = preds.detach().float().view(-1).cpu().numpy()
+            y_true  = gs_labels.detach().float().view(-1).cpu().numpy()
+
+            update_global_buffers(global_scores, global_labels, y_score, y_true)
+
+            loss_fct = torch.nn.BCELoss()
+            loss = loss_fct(preds, gs_labels.unsqueeze(1))
+            # loss = loss_fct(preds, gs_labels)
+            print("Grasp Prediction Loss:", loss.item())
+            num_fail += check_grasp(gs_labels, preds)
+            y_score = preds.detach().float().view(-1).cpu().numpy().tolist()
+            y_true  = gs_labels.detach().float().view(-1).cpu().numpy().tolist()
+            inst2scores[instance_key].extend(y_score)
+            inst2labels[instance_key].extend(y_true)
+
+
+        avg_time += time.time() - start_time
+
+        del inputs, grasp_outs, outputs, preds, gs_labels, loss
+        torch.cuda.empty_cache()
+        gc.collect()
+
+    # np.save("preds_list.npy", preds_list)
+
+    
+    print(f"Average Inference Time per Sample: {avg_time / num_val:.2f} seconds")
+    print("PA:",1-num_fail/(25*num_val))
+    instance_mAP, n_valid = compute_instance_mAP(inst2labels, inst2scores, verbose=False)
+    print(f"Instance mAP (valid instances={n_valid}): {instance_mAP:.4f}")
+    
+    top1_acc, n_acc = compute_top1_acc(inst2labels, inst2scores)
+    print(f"Top-1 Accuracy (valid instances={n_acc}): {top1_acc:.4f}")
+    # overall_ap = compute_overall_ap(global_scores, global_labels)
+    # print(f"Overall AP (micro, all instances merged): {overall_ap:.4f}")
+
+
 
 if __name__ == "__main__":
-    train_dataset = GraspcotDataset_Train("data/grasp_anything")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--model-path", type=str, default="/Data/wucl/ProGrasp/checkpoints/llava-graspcot-lora/")
+    parser.add_argument("--model-base", type=str, default="/Data/wucl/ProGrasp/pretrained_llms/llava-3d-7b/")
+    parser.add_argument("--output_dir", type=str, default="/Data/wucl/ProGrasp/checkpoints/llava-graspcot-lora/")
+    parser.add_argument("--data-path", type=str, default="/Data/wucl/taskgrasp_image")
+    parser.add_argument("--conv-mode", type=str, default="llava_v1")
+    parser.add_argument("--sep", type=str, default=",")
+    parser.add_argument(
+        "--precision",
+        default="bf16",
+        type=str,
+        choices=["fp32", "bf16", "fp16"],
+        help="precision for inference",
+    )
+    parser.add_argument("--temperature", type=float, default=0.2)
+    parser.add_argument("--top_p", type=float, default=None)
+    parser.add_argument("--num_beams", type=int, default=1)
+    parser.add_argument("--max_new_tokens", type=int, default=4096)
+    args = parser.parse_args()
+
+    eval_model(args)

@@ -780,8 +780,8 @@ class GraspcotDataset_Train(Dataset):
         data_dict = preprocess(sources, tokenizer=self.tokenizer, has_image=True)
         mask_data_dict = preprocess(mask_sources, tokenizer=self.tokenizer, has_image=True)
 
-        # input_ids = mask_data_dict["input_ids"][0]
-        input_ids = data_dict["input_ids"][0]
+        input_ids = mask_data_dict["input_ids"][0]
+        # input_ids = data_dict["input_ids"][0]
         labels = data_dict["labels"][0]
 
         input_dict = dict(
@@ -1027,17 +1027,8 @@ class GraspcotDataset_Test(Dataset):
         return data_dict
 
     def __len__(self):
-        return len(self.aligned_infos['infos'])
-            
-    def __getitem__(self, index):
-        """
-        index (int): the element index
-        """
-        data_dict = self.get_data_info(index)
-        return data_dict
+        return len(self.aligned_infos['infos']) * 10
 
-    def __len__(self):
-        return len(self.aligned_infos['infos'])
 
 
 tokenizer = transformers.AutoTokenizer.from_pretrained(

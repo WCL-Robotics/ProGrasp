@@ -206,6 +206,25 @@ def compute_instance_mAP(inst2labels, inst2scores, verbose=False):
     mAP = float(np.mean(aps)) if len(aps) > 0 else float("nan")
     return mAP, len(aps)
 
+def compute_top1_acc(inst2labels, inst2scores):
+    accs = []
+    for inst in inst2scores.keys():
+        scores = np.array(inst2scores[inst])
+        labels = np.array(inst2labels[inst])
+        
+        if len(scores) == 0:
+            continue
+            
+        # 找到预测概率最大的索引
+        max_idx = np.argmax(scores)
+        
+        # 检查对应标签是否为1
+        is_correct = 1 if labels[max_idx] == 1 else 0
+        accs.append(is_correct)
+        
+    top1_acc = float(np.mean(accs)) if len(accs) > 0 else 0.0
+    return top1_acc, len(accs)
+
 def update_global_buffers(global_scores, global_labels, scores, labels):
     """把一个 batch/一个 sample 的 scores/labels 加到全局列表里。"""
     global_scores.extend(np.asarray(scores, dtype=float).reshape(-1).tolist())
@@ -293,8 +312,9 @@ def eval_model(args):
     global_scores = []
     global_labels = []
 
-    num_val = 38
+
     len_data = len(test_dataset)
+    num_val = len(test_dataset)
     data_list = list(range(len_data))
     selected_data = random.sample(data_list, num_val)
 
@@ -309,9 +329,8 @@ def eval_model(args):
 
     for i in tqdm(selected_data):
         instance = test_dataset.__getitem__(i)
-        # instance_key = get_instance_key(instance)
+        instance_key = get_instance_key(instance)
         gs_labels = instance["gs_labels"]
-        correct_answers = instance.pop("correct_answer")
         questions = instance.pop("questions")
         inputs = precess_data(tokenizer, instance)
         inputs['gs'] = inputs['gs'].reshape(25, 6, 3)
@@ -341,10 +360,10 @@ def eval_model(args):
             # loss = loss_fct(preds, gs_labels)
             print("Grasp Prediction Loss:", loss.item())
             num_fail += check_grasp(gs_labels, preds)
-            # y_score = preds.detach().float().view(-1).cpu().numpy().tolist()
-            # y_true  = gs_labels.detach().float().view(-1).cpu().numpy().tolist()
-            # inst2scores[instance_key].extend(y_score)
-            # inst2labels[instance_key].extend(y_true)
+            y_score = preds.detach().float().view(-1).cpu().numpy().tolist()
+            y_true  = gs_labels.detach().float().view(-1).cpu().numpy().tolist()
+            inst2scores[instance_key].extend(y_score)
+            inst2labels[instance_key].extend(y_true)
 
 
         avg_time += time.time() - start_time
@@ -355,12 +374,15 @@ def eval_model(args):
 
     # np.save("preds_list.npy", preds_list)
 
-    print(1-num_fail/950.0)
     print(f"Average Inference Time per Sample: {avg_time / num_val:.2f} seconds")
-    # instance_mAP, n_valid = compute_instance_mAP(inst2labels, inst2scores, verbose=False)
-    # print(f"Instance mAP (valid instances={n_valid}): {instance_mAP:.4f}")
-    overall_ap = compute_overall_ap(global_scores, global_labels)
-    print(f"Overall AP (micro, all instances merged): {overall_ap:.4f}")
+    print("PA:",1-num_fail/(25*num_val))
+    instance_mAP, n_valid = compute_instance_mAP(inst2labels, inst2scores, verbose=False)
+    print(f"Instance mAP (valid instances={n_valid}): {instance_mAP:.4f}")
+    
+    top1_acc, n_acc = compute_top1_acc(inst2labels, inst2scores)
+    print(f"Top-1 Accuracy (valid instances={n_acc}): {top1_acc:.4f}")
+    # overall_ap = compute_overall_ap(global_scores, global_labels)
+    # print(f"Overall AP (micro, all instances merged): {overall_ap:.4f}")
 
 
 
